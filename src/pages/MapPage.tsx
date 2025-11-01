@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Trash2, Save, X } from "lucide-react";
+import "@/styles/map.css";
 
 const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
 const DIRIYYAH_ZOOM = 13;
