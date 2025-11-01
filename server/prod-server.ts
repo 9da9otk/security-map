@@ -1,21 +1,22 @@
-import path from "path";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import path from "node:path";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { appRouter } from "./routers";
 import { createContext } from "./_core/context";
 
+const distDir = path.resolve(process.cwd(), "dist");
+
 const app = express();
-import snapshotsRouter from "./routes/snapshots";
-
-// If frontend+backend on same domain, you can later tighten this CORS to your domain.
-app.use(cors({ origin: "*", credentials: true }));
+app.use(cors({ origin: true, credentials: true }));
 app.use(cookieParser());
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
-app.use("/api/snapshots", snapshotsRouter);
+app.use(express.json());
 
+// صحة
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
+
+// tRPC endpoint
 app.use(
   "/trpc",
   createExpressMiddleware({
@@ -24,14 +25,11 @@ app.use(
   })
 );
 
-// Serve React build assets
-const clientDir = path.resolve(process.cwd(), "dist");
-app.use(express.static(clientDir));
-
-// SPA fallback
+// ملفات الواجهة
+app.use(express.static(distDir));
 app.get("*", (_req, res) => {
-  res.sendFile(path.join(clientDir, "index.html"));
+  res.sendFile(path.join(distDir, "index.html"));
 });
 
-const port = Number(process.env.PORT || 8080);
-app.listen(port, () => console.log(`✅ Running on http://localhost:${port}`));
+const port = process.env.PORT ? Number(process.env.PORT) : 10000;
+app.listen(port, () => console.log(`Server running on :${port}`));
