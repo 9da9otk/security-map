@@ -1,7 +1,10 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 
-export function createContext({ req, res }: CreateExpressContextOptions) {
-  return { req, res }; // هنا يمكن إضافة session لاحقاً
-}
+export type Context = {
+  req: CreateExpressContextOptions["req"];
+  res: CreateExpressContextOptions["res"];
+};
 
-export type Context = Awaited<ReturnType<typeof createContext>>;
+export function createContext({ req, res }: CreateExpressContextOptions): Context {
+  return { req, res };
+}
