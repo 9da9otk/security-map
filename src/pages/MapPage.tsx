@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { Map, LngLatLike, MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import * as turf from "@turf/turf";
+
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +17,7 @@ import { Plus, Trash2, Save, X } from "lucide-react";
 const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
 const DIRIYYAH_ZOOM = 13;
 
-type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number; };
+type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number };
 const parseStyle = (s?: string | null): StyleJSON => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 const styleJSON = (o: StyleJSON) => JSON.stringify(o ?? {});
 
@@ -24,7 +25,12 @@ const circlePolygonFor = (lng: number, lat: number, r: number) =>
   turf.circle([lng, lat], Math.max(1, r), { units: "meters", steps: 64 });
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="space-y-1"><Label className="text-sm">{label}</Label>{children}</div>;
+  return (
+    <div className="space-y-1">
+      <Label className="text-sm">{label}</Label>
+      {children}
+    </div>
+  );
 }
 
 export default function MapPage() {
@@ -35,7 +41,7 @@ export default function MapPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
 
-  // API hooks
+  // ===== API hooks
   const listQ = trpc.locations.list.useQuery();
   const getQ = trpc.locations.getById.useQuery(
     { id: (selectedId ?? 0) as number },
@@ -43,6 +49,7 @@ export default function MapPage() {
   );
   const updateM = trpc.locations.update.useMutation();
   const deleteM = trpc.locations.delete.useMutation();
+
   const pplListQ = trpc.personnel.listByLocation.useQuery(
     { locationId: (selectedId ?? 0) as number },
     { enabled: selectedId != null }
@@ -50,12 +57,13 @@ export default function MapPage() {
   const pplCreateM = trpc.personnel.create.useMutation();
   const pplDeleteM = trpc.personnel.delete.useMutation();
 
-  // Build GeoJSON from API data
+  // ===== Build GeoJSON from API
   const geojson = useMemo(() => {
     if (!listQ.data) return { type: "FeatureCollection", features: [] } as turf.FeatureCollection;
     const features = listQ.data.map((loc: any) => {
-      const lat = Number(loc.latitude), lng = Number(loc.longitude);
-      const radius = Number(loc.radius || 30);
+      const lat = Number(loc.latitude);
+      const lng = Number(loc.longitude);
+      const radius = Number(loc.radius ?? 30);
       const s = parseStyle(loc.notes);
       const poly = circlePolygonFor(lng, lat, radius);
       return {
@@ -77,11 +85,11 @@ export default function MapPage() {
     return { type: "FeatureCollection", features } as turf.FeatureCollection;
   }, [listQ.data]);
 
-  // Keep latest geojson in a ref for late map load
+  // احتفظ بآخر GeoJSON حتى لو تأخر load
   const geojsonRef = useRef<any>(geojson);
   useEffect(() => { geojsonRef.current = geojson; }, [geojson]);
 
-  // Helper: safely set source data
+  // Helper: setData بأمان
   function setSourceDataSafe() {
     const map = mapRef.current;
     if (!map) return;
@@ -89,7 +97,7 @@ export default function MapPage() {
     if (src) src.setData(geojsonRef.current as any);
   }
 
-  // Init map
+  // ===== Init map
   useEffect(() => {
     if (mapRef.current) return;
 
@@ -101,6 +109,7 @@ export default function MapPage() {
       attributionControl: false,
     });
     mapRef.current = map;
+
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
     map.on("load", () => {
@@ -109,7 +118,7 @@ export default function MapPage() {
       map.addSource("locations-src", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
-        promoteId: "id",
+        promoteId: "id", // نروّج خاصية id إلى feature.id
       });
 
       map.addLayer({
@@ -142,14 +151,15 @@ export default function MapPage() {
         },
       });
 
-      // ← مهم: حمّل البيانات الحالية مباشرة بعد load
+      // ضخ البيانات الحالية فور التحميل
       setSourceDataSafe();
 
       map.on("mouseenter", "loc-fill", () => { map.getCanvas().style.cursor = "pointer"; });
       map.on("mouseleave", "loc-fill", () => { map.getCanvas().style.cursor = ""; hideHoverPopup(); });
       map.on("mousemove", "loc-fill", (e) => showHoverPopup(e));
       map.on("click", "loc-fill", (e) => {
-        const raw = e.features?.[0]?.properties?.id as unknown;
+        const f = e.features?.[0];
+        const raw = (f && (f.id as any)) ?? (f?.properties as any)?.id; // feature.id أولاً
         const id = raw != null ? Number(raw) : NaN;
         if (!Number.isFinite(id)) return;
         console.log("[map] clicked feature id:", id);
@@ -158,10 +168,14 @@ export default function MapPage() {
       });
     });
 
-    return () => { map.remove(); mapRef.current = null; mapLoadedRef.current = false; };
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      mapLoadedRef.current = false;
+    };
   }, []);
 
-  // Update source whenever geojson changes (robust to load timing)
+  // حدّث المصدر كل ما تغيّر geojson (حتى لو الـ style متأخر)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -172,7 +186,7 @@ export default function MapPage() {
     }
   }, [geojson]);
 
-  // Hover popup
+  // ===== Hover popup
   function showHoverPopup(e: MapLayerMouseEvent) {
     const map = mapRef.current!;
     const f = e.features?.[0]; if (!f) return;
@@ -189,7 +203,7 @@ export default function MapPage() {
   }
   function hideHoverPopup() { popupRef.current?.remove(); }
 
-  // Editor state
+  // ===== Editor state
   const loc = getQ.data as any;
   const s = parseStyle(loc?.notes);
   const [edit, setEdit] = useState({
@@ -202,17 +216,26 @@ export default function MapPage() {
     if (!loc) return;
     const st = parseStyle(loc.notes);
     setEdit({
-      name: loc.name ?? "", description: loc.description ?? "",
+      name: loc.name ?? "",
+      description: loc.description ?? "",
       type: (loc.locationType as any) ?? "mixed",
       radius: Number(loc.radius ?? 30),
-      fill: st.fill ?? "#f59e0b", fillOpacity: st.fillOpacity ?? 0.25,
-      stroke: st.stroke ?? "#b45309", strokeWidth: st.strokeWidth ?? 2,
+      fill: st.fill ?? "#f59e0b",
+      fillOpacity: st.fillOpacity ?? 0.25,
+      stroke: st.stroke ?? "#b45309",
+      strokeWidth: st.strokeWidth ?? 2,
     });
   }, [loc?.id]);
 
+  // ===== Save / Delete
   async function saveChanges() {
     if (selectedId == null) return;
-    const notes = styleJSON({ fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke, strokeWidth: edit.strokeWidth });
+    const notes = styleJSON({
+      fill: edit.fill,
+      fillOpacity: edit.fillOpacity,
+      stroke: edit.stroke,
+      strokeWidth: edit.strokeWidth,
+    });
 
     try {
       await updateM.mutateAsync({
@@ -229,7 +252,13 @@ export default function MapPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ name: edit.name, description: edit.description, locationType: edit.type, radius: edit.radius, notes }),
+        body: JSON.stringify({
+          name: edit.name,
+          description: edit.description,
+          locationType: edit.type,
+          radius: edit.radius,
+          notes,
+        }),
       });
     }
 
@@ -249,6 +278,7 @@ export default function MapPage() {
     await listQ.refetch();
   }
 
+  // ===== Personnel helpers (اختياري/مبسط)
   async function addPerson(name: string, role?: string) {
     if (selectedId == null) return;
     try {
@@ -263,6 +293,7 @@ export default function MapPage() {
     }
     await pplListQ.refetch();
   }
+
   async function removePerson(id: number | string) {
     try {
       await pplDeleteM.mutateAsync({ id: Number(id) });
@@ -274,18 +305,24 @@ export default function MapPage() {
 
   return (
     <div className="w-full h-full relative">
-      {/* خريطة */}
+      {/* الخريطة */}
       <div id="map" className="absolute inset-0" />
 
-      {/* لوحة مواقع جانبية مبسّطة لفتح المحرر يدويًا */}
+      {/* قائمة مواقع (بديل سريع لفتح المحرّر) */}
       <div className="absolute left-4 top-4 w-[260px] max-h-[80vh] overflow-auto z-20">
         <Card className="shadow-xl">
-          <CardHeader><CardTitle className="text-sm">المواقع</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="text-sm">المواقع</CardTitle>
+          </CardHeader>
           <CardContent className="space-y-2">
             {(listQ.data ?? []).map((it: any) => (
               <div key={it.id} className="flex items-center justify-between text-sm border rounded px-2 py-1">
                 <div className="truncate">{it.name ?? `#${it.id}`}</div>
-                <Button size="sm" variant="secondary" onClick={() => { setSelectedId(Number(it.id)); setEditorOpen(true); }}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => { setSelectedId(Number(it.id)); setEditorOpen(true); }}
+                >
                   تعديل
                 </Button>
               </div>
@@ -294,20 +331,26 @@ export default function MapPage() {
         </Card>
       </div>
 
-      {/* محرر جانبي */}
+      {/* المحرّر */}
       {editorOpen && loc && (
         <div className="absolute top-4 right-4 w-[360px] max-h-[92vh] overflow-auto z-20">
           <Card className="shadow-2xl">
             <CardHeader className="flex justify-between items-center">
               <CardTitle className="text-base">تعديل الموقع</CardTitle>
-              <Button size="icon" variant="secondary" onClick={() => setEditorOpen(false)}><X size={16} /></Button>
+              <Button size="icon" variant="secondary" onClick={() => setEditorOpen(false)}>
+                <X size={16} />
+              </Button>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-3">
-                <FieldRow label="اسم الموقع"><Input value={edit.name} onChange={(e) => setEdit(s => ({ ...s, name: e.target.value }))} /></FieldRow>
-                <FieldRow label="الوصف"><Textarea rows={3} value={edit.description} onChange={(e) => setEdit(s => ({ ...s, description: e.target.value }))} /></FieldRow>
+                <FieldRow label="اسم الموقع">
+                  <Input value={edit.name} onChange={(e) => setEdit((s) => ({ ...s, name: e.target.value }))} />
+                </FieldRow>
+                <FieldRow label="الوصف">
+                  <Textarea rows={3} value={edit.description} onChange={(e) => setEdit((s) => ({ ...s, description: e.target.value }))} />
+                </FieldRow>
                 <FieldRow label="نوع الموقع">
-                  <Select value={edit.type} onValueChange={(v: any) => setEdit(s => ({ ...s, type: v }))}>
+                  <Select value={edit.type} onValueChange={(v: any) => setEdit((s) => ({ ...s, type: v }))}>
                     <SelectTrigger><SelectValue placeholder="نوع" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="mixed">مختلط</SelectItem>
@@ -317,7 +360,7 @@ export default function MapPage() {
                   </Select>
                 </FieldRow>
                 <FieldRow label={`نطاق التمركز (متر): ${edit.radius}`}>
-                  <Slider value={[edit.radius]} min={5} max={500} step={5} onValueChange={(v) => setEdit(s => ({ ...s, radius: v[0] }))} />
+                  <Slider value={[edit.radius]} min={5} max={500} step={5} onValueChange={(v) => setEdit((s) => ({ ...s, radius: v[0] }))} />
                 </FieldRow>
               </div>
 
@@ -325,19 +368,27 @@ export default function MapPage() {
 
               <div className="space-y-3">
                 <div className="font-semibold text-sm">نمط الدائرة</div>
-                <FieldRow label="لون التعبئة"><input type="color" value={edit.fill} onChange={(e) => setEdit(s => ({ ...s, fill: e.target.value }))} /></FieldRow>
-                <FieldRow label={`شفافية التعبئة: ${edit.fillOpacity}`}>
-                  <Slider value={[edit.fillOpacity]} min={0} max={1} step={0.05} onValueChange={(v) => setEdit(s => ({ ...s, fillOpacity: v[0] }))} />
+                <FieldRow label="لون التعبئة">
+                  <input type="color" value={edit.fill} onChange={(e) => setEdit((s) => ({ ...s, fill: e.target.value }))} />
                 </FieldRow>
-                <FieldRow label="لون الحدود"><input type="color" value={edit.stroke} onChange={(e) => setEdit(s => ({ ...s, stroke: e.target.value }))} /></FieldRow>
+                <FieldRow label={`شفافية التعبئة: ${edit.fillOpacity}`}>
+                  <Slider value={[edit.fillOpacity]} min={0} max={1} step={0.05} onValueChange={(v) => setEdit((s) => ({ ...s, fillOpacity: v[0] }))} />
+                </FieldRow>
+                <FieldRow label="لون الحدود">
+                  <input type="color" value={edit.stroke} onChange={(e) => setEdit((s) => ({ ...s, stroke: e.target.value }))} />
+                </FieldRow>
                 <FieldRow label={`عرض الحدود (px): ${edit.strokeWidth}`}>
-                  <Slider value={[edit.strokeWidth]} min={0} max={10} step={1} onValueChange={(v) => setEdit(s => ({ ...s, strokeWidth: v[0] }))} />
+                  <Slider value={[edit.strokeWidth]} min={0} max={10} step={1} onValueChange={(v) => setEdit((s) => ({ ...s, strokeWidth: v[0] }))} />
                 </FieldRow>
               </div>
 
               <div className="flex gap-2 pt-2">
-                <Button onClick={saveChanges} className="flex-1"><Save size={16} className="mr-2" /> حفظ التعديلات</Button>
-                <Button variant="destructive" onClick={deleteLocation}><Trash2 size={16} className="mr-2" /> حذف</Button>
+                <Button onClick={saveChanges} className="flex-1">
+                  <Save size={16} className="mr-2" /> حفظ التعديلات
+                </Button>
+                <Button variant="destructive" onClick={deleteLocation}>
+                  <Trash2 size={16} className="mr-2" /> حذف
+                </Button>
               </div>
             </CardContent>
           </Card>
