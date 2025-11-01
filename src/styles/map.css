@@ -1,0 +1,37 @@
+/* تمديد الصفحة كاملة */
+html, body, #root {
+  height: 100%;
+}
+body { margin: 0; }
+
+/* غلاف صفحة الخريطة */
+.maplibre-page {
+  position: relative;
+  height: 100vh;          /* أهم سطر */
+  width: 100%;
+  overflow: hidden;
+}
+
+/* حاوية الخريطة تملأ الصفحة بالكامل */
+#map {
+  position: absolute;
+  inset: 0;               /* top:0; right:0; bottom:0; left:0 */
+}
+
+/* بطاقات/لوحات عائمة فوق الخريطة */
+.map-panel {
+  z-index: 10;
+}
+
+/* إصلاح طبقة attribution والـcontrols فوق الخريطة */
+.maplibregl-ctrl,
+.maplibregl-ctrl-bottom-right,
+.maplibregl-ctrl-bottom-left {
+  z-index: 11;
+}
+
+/* لو حصل أي فلكس من أب أعلى، منع الانهيار */
+.maplibre-page, #map {
+  min-height: 0;
+  min-width: 0;
+}
