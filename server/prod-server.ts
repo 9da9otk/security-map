@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { createExpressMiddleware } from '@trpc/server/adapters/express';
 import { appRouter } from './routers';
 import { createContext } from './_core/context';
-import { getDb, locations } from './db';
+import { getDb, locations, personnelTable } from './db';
+import { eq } from 'drizzle-orm';
 
 /* -------------------- Helpers -------------------- */
 
@@ -91,6 +92,7 @@ app.use(
 
 /* -------------------- REST Fallback -------------------- */
 
+// CREATE Location
 app.post('/api/locations', async (req, res) => {
   try {
     const {
@@ -103,6 +105,7 @@ app.post('/api/locations', async (req, res) => {
       latitude,
       longitude,
       isActive,
+      notes,
     } = req.body || {};
 
     const latRaw = lat ?? latitude;
@@ -124,11 +127,11 @@ app.post('/api/locations', async (req, res) => {
     await db.insert(locations).values({
       name: String(name),
       description: description ?? null,
-      // عدّل الأسماء هنا إذا أعمدة الجدول لديك lat/lng رقمية
-      latitude: String(latNum),
-      longitude: String(lngNum),
+      latitude: String(latNum),   // أعمدة السكيمة لديك نصية
+      longitude: String(lngNum),  // "
       locationType: (locationType as 'security' | 'traffic' | 'mixed') ?? 'mixed',
       radius: radius == null ? null : Number(radius),
+      notes: notes == null ? null : String(notes),
       isActive: isActive == null ? 1 : Number(isActive) ? 1 : 0,
     });
 
@@ -139,6 +142,85 @@ app.post('/api/locations', async (req, res) => {
   }
 });
 
+// UPDATE Location (Partial)
+app.put('/api/locations/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad_id' });
+
+    const { name, description, locationType, radius, notes, latitude, longitude } = req.body ?? {};
+    const patch: Record<string, unknown> = {};
+    if (name !== undefined) patch.name = String(name);
+    if (description !== undefined) patch.description = description ?? null;
+    if (locationType !== undefined) patch.locationType = locationType;
+    if (radius !== undefined) patch.radius = radius == null ? null : Number(radius);
+    if (notes !== undefined) patch.notes = notes == null ? null : String(notes);
+    if (latitude !== undefined) patch.latitude = String(latitude);
+    if (longitude !== undefined) patch.longitude = String(longitude);
+
+    const db = await getDb();
+    await db.update(locations).set(patch).where(eq(locations.id, id));
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error('PUT /api/locations/:id error:', e?.message || e, e);
+    res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
+// DELETE Location
+app.delete('/api/locations/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad_id' });
+
+    const db = await getDb();
+    await db.delete(locations).where(eq(locations.id, id));
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error('DELETE /api/locations/:id error:', e?.message || e, e);
+    res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
+// CREATE Personnel
+app.post('/api/personnel', async (req, res) => {
+  try {
+    const { locationId, name, role, phone, email, personnelType, notes } = req.body ?? {};
+    const locId = Number(locationId);
+    if (!Number.isFinite(locId) || !name) {
+      return res.status(400).json({ ok: false, error: 'missing' });
+    }
+    const db = await getDb();
+    await db.insert(personnelTable).values({
+      locationId: locId,
+      name: String(name),
+      role: role ? String(role) : '',
+      phone: phone ? String(phone) : null,
+      email: email ? String(email) : null,
+      personnelType: (personnelType as 'security' | 'traffic') ?? 'security',
+      notes: notes ? String(notes) : null,
+    });
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error('POST /api/personnel error:', e?.message || e, e);
+    res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
+// DELETE Personnel
+app.delete('/api/personnel/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'bad_id' });
+    const db = await getDb();
+    await db.delete(personnelTable).where(eq(personnelTable.id, id));
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error('DELETE /api/personnel/:id error:', e?.message || e, e);
+    res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
 /* -------------------- Health -------------------- */
 
 app.get('/healthz', async (_req, res) => {
@@ -146,7 +228,7 @@ app.get('/healthz', async (_req, res) => {
     sanitizeDatabaseUrlInEnv();
     let dbOk = false;
     try {
-      const _db = await getDb();
+      await getDb();
       dbOk = true;
     } catch {
       dbOk = false;
