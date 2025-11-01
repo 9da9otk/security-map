@@ -16,7 +16,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 const EPHEMERAL_ASSIGNMENTS =
   (import.meta.env.VITE_EPHEMERAL_ASSIGNMENTS ?? "true") === "true";
 
-// استخدم ثابت واحد فقط لتفادي التكرار
+// ثابت وحيد للمركز والزوم
 const DIRIYAH_CENTER_LNG_LAT: [number, number] = [46.67, 24.74];
 const DIRIYAH_ZOOM = 13;
 
@@ -124,20 +124,10 @@ export default function MapPage() {
   const createLocationMutation = trpc.locations.create.useMutation({
     onSuccess: () => {
       locationsQuery.refetch();
-      setShowAddLocation(false);
-      setIsSelectingLocation(false);
-      if (tempMarkerRef.current) {
-        tempMarkerRef.current.remove();
-        tempMarkerRef.current = null;
-      }
-      setLocationForm({
-        name: "",
-        description: "",
-        latitude: "24.74",
-        longitude: "46.67",
-        locationType: "mixed",
-        radius: 50,
-      });
+      resetLocationUI();
+    },
+    onError: (err) => {
+      console.error("TRPC create location error:", err);
     },
   });
 
@@ -145,12 +135,11 @@ export default function MapPage() {
     onSuccess: () => {
       locationsQuery.refetch();
       setEditingLocation(null);
-      setShowAddLocation(false);
-      setIsSelectingLocation(false);
-      if (tempMarkerRef.current) {
-        tempMarkerRef.current.remove();
-        tempMarkerRef.current = null;
-      }
+      resetLocationUI();
+    },
+    onError: (err) => {
+      console.error("TRPC update location error:", err);
+      alert("تعذر تحديث الموقع");
     },
   });
 
@@ -159,13 +148,15 @@ export default function MapPage() {
       locationsQuery.refetch();
       setSelectedLocation(null);
     },
+    onError: (err) => {
+      console.error("TRPC delete location error:", err);
+      alert("تعذر حذف الموقع");
+    },
   });
 
   const createPersonnelMutation = trpc.personnel.create.useMutation({
     onSuccess: () => {
-      if (selectedLocation) {
-        locationDetailsQuery.refetch();
-      }
+      if (selectedLocation) locationDetailsQuery.refetch();
       setShowAddPersonnel(false);
       setPersonnelForm({
         name: "",
@@ -176,24 +167,49 @@ export default function MapPage() {
         notes: null,
       });
     },
+    onError: (err) => {
+      console.error("TRPC create personnel error:", err);
+      alert("تعذر إضافة الفرد");
+    },
   });
 
   const updatePersonnelMutation = trpc.personnel.update.useMutation({
     onSuccess: () => {
-      if (selectedLocation) {
-        locationDetailsQuery.refetch();
-      }
+      if (selectedLocation) locationDetailsQuery.refetch();
       setEditingPersonnel(null);
+    },
+    onError: (err) => {
+      console.error("TRPC update personnel error:", err);
+      alert("تعذر تحديث بيانات الفرد");
     },
   });
 
   const deletePersonnelMutation = trpc.personnel.delete.useMutation({
     onSuccess: () => {
-      if (selectedLocation) {
-        locationDetailsQuery.refetch();
-      }
+      if (selectedLocation) locationDetailsQuery.refetch();
+    },
+    onError: (err) => {
+      console.error("TRPC delete personnel error:", err);
+      alert("تعذر حذف الفرد");
     },
   });
+
+  function resetLocationUI() {
+    setShowAddLocation(false);
+    setIsSelectingLocation(false);
+    if (tempMarkerRef.current) {
+      tempMarkerRef.current.remove();
+      tempMarkerRef.current = null;
+    }
+    setLocationForm({
+      name: "",
+      description: "",
+      latitude: "24.74",
+      longitude: "46.67",
+      locationType: "mixed",
+      radius: 50,
+    });
+  }
 
   // تحويل بيانات المواقع إلى GeoJSON
   const toGeoJSON = (items: Location[]) => ({
@@ -218,7 +234,9 @@ export default function MapPage() {
     if (!mapContainer.current || mapRef.current) return;
 
     const MT_KEY = import.meta.env.VITE_MAPTILER_KEY;
-    const styleUrl = `https://api.maptiler.com/maps/streets-v2/style.json?key=${MT_KEY}`;
+    const styleUrl = MT_KEY
+      ? `https://api.maptiler.com/maps/streets-v2/style.json?key=${MT_KEY}`
+      : "https://demotiles.maplibre.org/style.json";
 
     const map = new maplibregl.Map({
       container: mapContainer.current,
@@ -331,7 +349,6 @@ export default function MapPage() {
         `;
         popupRef.current!.setLngLat(coords).setHTML(html).addTo(map);
 
-        // ربط الزر بعد حقن HTML
         setTimeout(() => {
           const btn = document.getElementById(`show-${props.id}`);
           if (btn) {
@@ -430,18 +447,56 @@ export default function MapPage() {
     geolocateRef.current?.trigger();
   };
 
+  // 🔐 حفظ الموقع: جرّب tRPC أولًا، ولو فشل إرجع لـ REST (مضمون)
   const handleAddLocation = async () => {
     try {
+      // تحقق بسيط
+      if (!locationForm.name.trim()) {
+        alert("فضلاً أدخل اسم الموقع");
+        return;
+      }
+      if (!locationForm.latitude || !locationForm.longitude) {
+        alert("فضلاً اختر إحداثيات الموقع من الخريطة");
+        return;
+      }
+
       if (editingLocation) {
         await updateLocationMutation.mutateAsync({
           id: editingLocation.id,
           ...locationForm,
         });
       } else {
-        await createLocationMutation.mutateAsync(locationForm);
+        let saved = false;
+
+        // محاولة tRPC
+        try {
+          await createLocationMutation.mutateAsync(locationForm as any);
+          saved = true;
+        } catch (e) {
+          console.warn("tRPC create failed, falling back to REST:", e);
+        }
+
+        // REST fallback
+        if (!saved) {
+          const resp = await axios.post("/api/locations", {
+            name: locationForm.name,
+            description: locationForm.description || null,
+            latitude: locationForm.latitude,
+            longitude: locationForm.longitude,
+            locationType: locationForm.locationType,
+            radius: locationForm.radius ?? null,
+          });
+          if (!resp?.data?.ok) {
+            throw new Error(resp?.data?.error || "REST save failed");
+          }
+        }
+
+        await locationsQuery.refetch?.();
+        resetLocationUI();
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error saving location:", error);
+      alert("تعذر حفظ الموقع:\n" + (error?.message || "خطأ غير متوقع"));
     }
   };
 
@@ -495,6 +550,7 @@ export default function MapPage() {
       }
     } catch (error) {
       console.error("Error saving personnel:", error);
+      alert("تعذر حفظ بيانات الفرد");
     }
   };
 
@@ -609,85 +665,106 @@ export default function MapPage() {
                     اضغط على الخريطة لاختيار الموقع
                   </div>
 
-                  {locationForm.latitude !== "24.74" && (
-                    <div className="space-y-3 border-t pt-3">
+                  {/* ✅ النموذج يظهر دائمًا في وضع التحديد */}
+                  <div className="space-y-3 border-t pt-3">
+                    <div>
+                      <Label>اسم الموقع</Label>
+                      <Input
+                        value={locationForm.name}
+                        onChange={(e) =>
+                          setLocationForm({ ...locationForm, name: e.target.value })
+                        }
+                        placeholder="مثال: نقطة تفتيش الدرعية"
+                      />
+                    </div>
+                    <div>
+                      <Label>الوصف</Label>
+                      <Textarea
+                        value={locationForm.description}
+                        onChange={(e) =>
+                          setLocationForm({
+                            ...locationForm,
+                            description: e.target.value,
+                          })
+                        }
+                        placeholder="وصف الموقع"
+                        className="h-20"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <Label>اسم الموقع</Label>
+                        <Label>Lat (خط العرض)</Label>
                         <Input
-                          value={locationForm.name}
+                          value={locationForm.latitude}
                           onChange={(e) =>
-                            setLocationForm({ ...locationForm, name: e.target.value })
+                            setLocationForm({ ...locationForm, latitude: e.target.value })
                           }
-                          placeholder="مثال: نقطة تفتيش الدرعية"
+                          placeholder="24.74"
                         />
                       </div>
                       <div>
-                        <Label>الوصف</Label>
-                        <Textarea
-                          value={locationForm.description}
-                          onChange={(e) =>
-                            setLocationForm({
-                              ...locationForm,
-                              description: e.target.value,
-                            })
-                          }
-                          placeholder="وصف الموقع"
-                          className="h-20"
-                        />
-                      </div>
-                      <div>
-                        <Label>نوع الموقع</Label>
-                        <Select
-                          value={locationForm.locationType}
-                          onValueChange={(value: any) =>
-                            setLocationForm({ ...locationForm, locationType: value })
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="security">أمن</SelectItem>
-                            <SelectItem value="traffic">مروري</SelectItem>
-                            <SelectItem value="mixed">مختلط</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div>
-                        <Label>نطاق التمركز (متر)</Label>
+                        <Label>Lng (خط الطول)</Label>
                         <Input
-                          type="number"
-                          value={locationForm.radius}
+                          value={locationForm.longitude}
                           onChange={(e) =>
-                            setLocationForm({
-                              ...locationForm,
-                              radius: parseInt(e.target.value),
-                            })
+                            setLocationForm({ ...locationForm, longitude: e.target.value })
                           }
-                          placeholder="100"
+                          placeholder="46.67"
                         />
-                      </div>
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={handleAddLocation}
-                          className="flex-1 bg-amber-600 hover:bg-amber-700"
-                          disabled={
-                            createLocationMutation.isPending ||
-                            updateLocationMutation.isPending
-                          }
-                        >
-                          حفظ
-                        </Button>
-                        <Button
-                          onClick={handleCancelSelection}
-                          variant="outline"
-                          className="flex-1"
-                        >
-                          إلغاء
-                        </Button>
                       </div>
                     </div>
-                  )}
+                    <div>
+                      <Label>نوع الموقع</Label>
+                      <Select
+                        value={locationForm.locationType}
+                        onValueChange={(value: any) =>
+                          setLocationForm({ ...locationForm, locationType: value })
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="security">أمن</SelectItem>
+                          <SelectItem value="traffic">مروري</SelectItem>
+                          <SelectItem value="mixed">مختلط</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label>نطاق التمركز (متر)</Label>
+                      <Input
+                        type="number"
+                        value={locationForm.radius}
+                        onChange={(e) =>
+                          setLocationForm({
+                            ...locationForm,
+                            radius: parseInt(e.target.value || "0", 10),
+                          })
+                        }
+                        placeholder="100"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleAddLocation}
+                        className="flex-1 bg-amber-600 hover:bg-amber-700"
+                        disabled={
+                          createLocationMutation.isPending ||
+                          updateLocationMutation.isPending
+                        }
+                      >
+                        حفظ
+                      </Button>
+                      <Button
+                        onClick={handleCancelSelection}
+                        variant="outline"
+                        className="flex-1"
+                      >
+                        إلغاء
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               )}
 
