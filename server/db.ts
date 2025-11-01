@@ -3,7 +3,7 @@ import 'dotenv/config';
 import mysql, { Pool } from 'mysql2/promise';
 import { drizzle, MySql2Database } from 'drizzle-orm/mysql2';
 
-// حدّث المسار حسب مشروعك (هذا هو الصحيح لديك)
+// جداولك من السكيمة
 import { locations, personnel as personnelTable, users } from '../drizzle/schema';
 import * as schema from '../drizzle/schema';
 
@@ -13,7 +13,7 @@ import { ensureSchema } from './_core/ensureSchema';
 let _db: MySql2Database<typeof schema> | null = null;
 let _pool: Pool | null = null;
 
-// نحذف أي ssl=true/sslmode=* من DATABASE_URL لأنها تتحول إلى boolean داخل mysql2
+/** يحذف أي ssl=true/sslmode=* من DATABASE_URL لأنها تتحول إلى boolean داخل mysql2 */
 function cleanDatabaseUrl(urlStr: string) {
   try {
     const u = new URL(urlStr);
@@ -26,10 +26,10 @@ function cleanDatabaseUrl(urlStr: string) {
   }
 }
 
-// إن أردت تعطيل SSL تمامًا ضع APP_DB_SSL=off في المتغيرات
+/** إن أردت تعطيل SSL تمامًا ضع APP_DB_SSL=off في المتغيرات */
 function buildSslOption() {
   if (process.env.APP_DB_SSL === 'off') return undefined;
-  // إن كان مزودك يتطلب CA مخصصًا، استبدل السطر التالي بقراءة ca من ملف:
+  // لو لديك CA مخصّص من مزود القاعدة استبدل السطر التالي بقراءة ca من ملف:
   // import fs from 'node:fs';
   // return { ca: fs.readFileSync('/path/to/ca.pem', 'utf8') };
   return { rejectUnauthorized: true, minVersion: 'TLSv1.2' } as const;
@@ -47,7 +47,7 @@ export async function getDb() {
       waitForConnections: true,
       connectionLimit: 10,
       namedPlaceholders: true,
-      ssl, // <-- مهم: كائن وليس boolean
+      ssl, // <-- كائن وليس boolean
     });
   } else {
     _pool = mysql.createPool({
@@ -59,16 +59,20 @@ export async function getDb() {
       waitForConnections: true,
       connectionLimit: 10,
       namedPlaceholders: true,
-      ssl, // <-- مهم: كائن وليس boolean
+      ssl, // <-- كائن وليس boolean
     });
   }
 
   // إنشاء الجداول إن لم تكن موجودة
   await ensureSchema(_pool);
 
-  // مرّر الـ schema إلى Drizzle لتحصل على typing كامل
-  _db = drizzle(_pool, { schema });
-  console.log('[DB] pool ready (ssl:', process.env.APP_DB_SSL === 'off' ? 'disabled' : 'enabled', ')');
+  // المهم: حدّد وضع Drizzle عند تمرير schema
+  _db = drizzle(_pool, { schema, mode: 'default' });
+  console.log(
+    '[DB] pool ready (ssl:',
+    process.env.APP_DB_SSL === 'off' ? 'disabled' : 'enabled',
+    ')'
+  );
 
   return _db;
 }
@@ -77,5 +81,13 @@ export async function getDb() {
 export { locations, personnelTable, users };
 
 // إغلاق أنيق للـ pool عند الإنهاء
-process.on('SIGTERM', async () => { try { await _pool?.end(); } catch {} });
-process.on('SIGINT', async () => { try { await _pool?.end(); } catch {} });
+process.on('SIGTERM', async () => {
+  try {
+    await _pool?.end();
+  } catch {}
+});
+process.on('SIGINT', async () => {
+  try {
+    await _pool?.end();
+  } catch {}
+});
