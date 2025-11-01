@@ -14,8 +14,20 @@ const STYLE_MAPTILER = MAPTILER_KEY
   : null;
 const STYLE_FALLBACK = "https://demotiles.maplibre.org/style.json";
 
-type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number; strokeEnabled?: boolean; };
-const parseStyle = (s?: string | null): StyleJSON => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
+type StyleJSON = {
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeEnabled?: boolean;
+};
+const parseStyle = (s?: string | null): StyleJSON => {
+  try {
+    return s ? JSON.parse(s) : {};
+  } catch {
+    return {};
+  }
+};
 const styleJSON = (o: StyleJSON) => JSON.stringify(o ?? {});
 const circlePolygonFor = (lng: number, lat: number, r: number) =>
   turf.circle([lng, lat], Math.max(1, r), { units: "meters", steps: 64 });
@@ -32,14 +44,20 @@ export default function MapPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   // tRPC
-  const listQ   = trpc.locations.list.useQuery();
-  const getQ    = trpc.locations.getById.useQuery({ id: selectedId ?? 0 }, { enabled: selectedId != null, refetchOnWindowFocus: false });
+  const listQ = trpc.locations.list.useQuery();
+  const getQ = trpc.locations.getById.useQuery(
+    { id: selectedId ?? 0 },
+    { enabled: selectedId != null, refetchOnWindowFocus: false }
+  );
   const createM = trpc.locations.create.useMutation();
   const updateM = trpc.locations.update.useMutation();
   const deleteM = trpc.locations.delete.useMutation();
 
   const listData: any[] = listQ.data ?? [];
-  const selectedLoc = useMemo(() => listData.find((x) => Number(x.id) === selectedId), [listData, selectedId]);
+  const selectedLoc = useMemo(
+    () => listData.find((x) => Number(x.id) === selectedId),
+    [listData, selectedId]
+  );
 
   // حالة المحرر
   const s0 = parseStyle(selectedLoc?.notes);
@@ -54,9 +72,6 @@ export default function MapPage() {
     strokeWidth: s0.strokeWidth ?? 2,
     strokeEnabled: s0.strokeEnabled ?? true,
   });
-
-  // مسودة الإنشاء
-  const [draft, setDraft] = useState<{ lat: number | null; lng: number | null }>({ lat: null, lng: null });
 
   // حمّل قيم التحرير عند تغيّر الاختيار
   useEffect(() => {
@@ -74,6 +89,11 @@ export default function MapPage() {
       strokeEnabled: s.strokeEnabled ?? true,
     });
   }, [selectedLoc?.id]);
+
+  // مسودة الإنشاء
+  const [draft, setDraft] = useState<{ lat: number | null; lng: number | null }>(
+    { lat: null, lng: null }
+  );
 
   // ===== GeoJSON (يشمل المسودة عند الإنشاء) =====
   const geojson = useMemo(() => {
@@ -98,11 +118,11 @@ export default function MapPage() {
           stroke: st.stroke ?? "#b45309",
           strokeWidth: st.strokeWidth ?? 2,
           strokeEnabled: st.strokeEnabled ?? true,
-          lat, lng,
+          lat,
+          lng,
         },
       } as any);
     }
-    // draft feature
     if (mode === "create" && draft.lat != null && draft.lng != null) {
       const poly = circlePolygonFor(draft.lng, draft.lat, edit.radius);
       fc.features.push({
@@ -119,15 +139,18 @@ export default function MapPage() {
           stroke: edit.stroke,
           strokeWidth: edit.strokeWidth,
           strokeEnabled: edit.strokeEnabled,
-          lat: draft.lat, lng: draft.lng,
+          lat: draft.lat,
+          lng: draft.lng,
         },
       } as any);
     }
     return fc;
-  }, [listData, mode, draft, edit]);
+  }, [listData, mode, draft, edit.radius, edit.fill, edit.fillOpacity, edit.stroke, edit.strokeWidth, edit.strokeEnabled, edit.name, edit.type]);
 
   const geojsonRef = useRef<GeoJSON.FeatureCollection>(geojson);
-  useEffect(() => { geojsonRef.current = geojson; }, [geojson]);
+  useEffect(() => {
+    geojsonRef.current = geojson;
+  }, [geojson]);
 
   // دوماً مرّر نسخة جديدة لضمان إعادة الرسم
   function setSourceData(data?: GeoJSON.FeatureCollection) {
@@ -137,7 +160,7 @@ export default function MapPage() {
     src.setData(JSON.parse(JSON.stringify(payload)));
   }
 
-  // ===== إنشاء الخريطة =====
+  // ===== إنشاء الخريطة (مرة واحدة فقط) =====
   useEffect(() => {
     if (mapRef.current) return;
 
@@ -149,12 +172,18 @@ export default function MapPage() {
       attributionControl: false,
     });
     mapRef.current = map;
+
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     requestAnimationFrame(() => map.resize());
 
+    // تجهيز المصدر والطبقات
     const prepare = () => {
       if (!map.getSource("locations-src")) {
-        map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
+        map.addSource("locations-src", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+          promoteId: "id",
+        });
 
         map.addLayer({
           id: "loc-fill",
@@ -174,7 +203,7 @@ export default function MapPage() {
           paint: {
             "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
             "line-width": ["coalesce", ["get", "strokeWidth"], 2],
-            "line-opacity": ["case", ["==", ["get", "strokeEnabled"], true], 1, 0], // تفعيل/تعطيل الحدود
+            "line-opacity": ["case", ["==", ["get", "strokeEnabled"], true], 1, 0],
           },
         });
 
@@ -187,18 +216,44 @@ export default function MapPage() {
       }
     };
 
-    map.on("error", () => {
-      map.setStyle(STYLE_FALLBACK);
-      map.once("styledata", () => { prepare(); setSourceData(); setTimeout(() => map.resize(), 0); });
-    });
+    // احتفاظ بالكاميرا عند السويتش للستايل الاحتياطي
+    const switchToFallbackStyle = (reason?: any) => {
+      if ((map as any)._usesFallbackStyle) return;
+      const center = map.getCenter();
+      const zoom = map.getZoom();
+      const bearing = map.getBearing();
+      const pitch = map.getPitch();
 
-    map.on("load", () => { loadedRef.current = true; prepare(); setSourceData(); setTimeout(() => map.resize(), 0); });
+      console.warn("[map] style error -> switching to fallback", reason?.error || reason);
+      map.setStyle(STYLE_FALLBACK);
+      (map as any)._usesFallbackStyle = true;
+
+      map.once("styledata", () => {
+        prepare();
+        map.jumpTo({ center, zoom, bearing, pitch });
+        setSourceData();
+        setTimeout(() => map.resize(), 0);
+      });
+    };
+
+    map.on("error", switchToFallbackStyle);
+
+    map.on("load", () => {
+      loadedRef.current = true;
+      prepare();
+      setSourceData();
+      setTimeout(() => map.resize(), 0);
+    });
 
     // Hover popup
     const onEnter = () => (map.getCanvas().style.cursor = "pointer");
-    const onLeave = () => { map.getCanvas().style.cursor = ""; popupRef.current?.remove(); };
+    const onLeave = () => {
+      map.getCanvas().style.cursor = "";
+      popupRef.current?.remove();
+    };
     const onMove = (e: MapLayerMouseEvent) => {
-      const f = e.features?.[0]; if (!f) return;
+      const f = e.features?.[0];
+      if (!f) return;
       const p = f.properties as any;
       const html = `<div style="font-family:system-ui;min-width:220px">
         <div style="font-weight:600;margin-bottom:4px">${p.name ?? "موقع"}</div>
@@ -206,7 +261,7 @@ export default function MapPage() {
         <div style="font-size:12px;opacity:.8">النطاق: ${p.radius} م</div>
       </div>`;
       if (!popupRef.current)
-        popupRef.current = new maplibregl.Popup({ closeButton:false, closeOnClick:false, offset:8 });
+        popupRef.current = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
       popupRef.current.setLngLat(e.lngLat).setHTML(html).addTo(map);
     };
     const onClickFill = (e: MapLayerMouseEvent) => {
@@ -234,10 +289,17 @@ export default function MapPage() {
         id: -1,
         geometry: circlePolygonFor(lng, lat, edit.radius).geometry,
         properties: {
-          id: -1, name: edit.name || "موقع جديد", type: edit.type, radius: edit.radius,
-          fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke,
-          strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
-          lat, lng,
+          id: -1,
+          name: edit.name || "موقع جديد",
+          type: edit.type,
+          radius: edit.radius,
+          fill: edit.fill,
+          fillOpacity: edit.fillOpacity,
+          stroke: edit.stroke,
+          strokeWidth: edit.strokeWidth,
+          strokeEnabled: edit.strokeEnabled,
+          lat,
+          lng,
         },
       };
       const updated = {
@@ -258,7 +320,7 @@ export default function MapPage() {
       mapRef.current = null;
       loadedRef.current = false;
     };
-  }, [mode, edit]);
+  }, []); // 👈 مهم: مرة واحدة فقط، لا تعتمد على mode/edit
 
   // حدّث المصدر عند تغيّر GeoJSON
   useEffect(() => {
@@ -301,8 +363,11 @@ export default function MapPage() {
   async function saveEdit() {
     if (selectedId == null) return;
     const notes = styleJSON({
-      fill: edit.fill, fillOpacity: edit.fillOpacity,
-      stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
+      fill: edit.fill,
+      fillOpacity: edit.fillOpacity,
+      stroke: edit.stroke,
+      strokeWidth: edit.strokeWidth,
+      strokeEnabled: edit.strokeEnabled,
     });
 
     try {
@@ -319,11 +384,18 @@ export default function MapPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ name: edit.name, description: edit.description, locationType: edit.type, radius: edit.radius, notes }),
+        body: JSON.stringify({
+          name: edit.name,
+          description: edit.description,
+          locationType: edit.type,
+          radius: edit.radius,
+          notes,
+        }),
       });
     }
     await listQ.refetch();
-    setMode("view"); setSelectedId(null);
+    setMode("view");
+    setSelectedId(null);
   }
 
   async function deleteLoc() {
@@ -335,11 +407,15 @@ export default function MapPage() {
       await fetch(`/api/locations/${selectedId}`, { method: "DELETE", credentials: "include" });
     }
     await listQ.refetch();
-    setMode("view"); setSelectedId(null);
+    setMode("view");
+    setSelectedId(null);
   }
 
   async function saveCreate() {
-    if (draft.lat == null || draft.lng == null) { alert("اضغط على الخريطة لتحديد المركز."); return; }
+    if (draft.lat == null || draft.lng == null) {
+      alert("اضغط على الخريطة لتحديد المركز.");
+      return;
+    }
     try {
       await createM.mutateAsync({
         name: edit.name || "موقع",
@@ -349,8 +425,11 @@ export default function MapPage() {
         locationType: edit.type,
         radius: edit.radius,
         notes: styleJSON({
-          fill: edit.fill, fillOpacity: edit.fillOpacity,
-          stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
+          fill: edit.fill,
+          fillOpacity: edit.fillOpacity,
+          stroke: edit.stroke,
+          strokeWidth: edit.strokeWidth,
+          strokeEnabled: edit.strokeEnabled,
         }),
       } as any);
     } catch {
@@ -361,11 +440,16 @@ export default function MapPage() {
         body: JSON.stringify({
           name: edit.name || "موقع",
           description: edit.description || null,
-          latitude: draft.lat, longitude: draft.lng,
-          locationType: edit.type, radius: edit.radius,
+          latitude: draft.lat,
+          longitude: draft.lng,
+          locationType: edit.type,
+          radius: edit.radius,
           notes: styleJSON({
-            fill: edit.fill, fillOpacity: edit.fillOpacity,
-            stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
+            fill: edit.fill,
+            fillOpacity: edit.fillOpacity,
+            stroke: edit.stroke,
+            strokeWidth: edit.strokeWidth,
+            strokeEnabled: edit.strokeEnabled,
           }),
         }),
       });
@@ -379,7 +463,10 @@ export default function MapPage() {
     setSelectedId(null);
     setDraft({ lat: null, lng: null });
     const current = geojsonRef.current as GeoJSON.FeatureCollection;
-    const updated = { ...current, features: current.features.filter((f: any) => f.id !== -1) } as GeoJSON.FeatureCollection;
+    const updated = {
+      ...current,
+      features: current.features.filter((f: any) => f.id !== -1),
+    } as GeoJSON.FeatureCollection;
     geojsonRef.current = updated;
     setSourceData(updated);
   }
@@ -390,17 +477,35 @@ export default function MapPage() {
       <div id="map" />
 
       {/* لستة المواقع + زر موقع جديد */}
-      <div className="map-panel" style={{ position:"absolute", left:16, top:16, width:260, maxHeight:"80vh", overflow:"auto" }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-          <div style={{ fontWeight:700 }}>المواقع</div>
-          <button className="btn secondary" onClick={() => { setMode("create"); setSelectedId(null); setDraft({ lat: null, lng: null }); }}>
+      <div
+        className="map-panel"
+        style={{ position: "absolute", left: 16, top: 16, width: 260, maxHeight: "80vh", overflow: "auto" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={{ fontWeight: 700 }}>المواقع</div>
+          <button
+            className="btn secondary"
+            onClick={() => {
+              setMode("create");
+              setSelectedId(null);
+              setDraft({ lat: null, lng: null });
+            }}
+          >
             موقع جديد
           </button>
         </div>
         {(listData ?? []).map((it) => (
           <div className="list-item" key={it.id}>
-            <div className="truncate" title={it.name}>{it.name ?? `#${it.id}`}</div>
-            <button className="btn secondary" onClick={() => { setSelectedId(Number(it.id)); setMode("edit"); }}>
+            <div className="truncate" title={it.name}>
+              {it.name ?? `#${it.id}`}
+            </div>
+            <button
+              className="btn secondary"
+              onClick={() => {
+                setSelectedId(Number(it.id));
+                setMode("edit");
+              }}
+            >
               تعديل
             </button>
           </div>
@@ -409,22 +514,34 @@ export default function MapPage() {
 
       {/* محرر التعديل */}
       {mode === "edit" && selectedLoc && (
-        <div className="map-panel" style={{ position:"absolute", right:16, top:16, width:"var(--panel-w)", maxHeight:"92vh", overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-            <div style={{ fontWeight:700 }}>تعديل الموقع</div>
-            <button className="btn secondary" onClick={cancel}>إغلاق</button>
+        <div
+          className="map-panel"
+          style={{ position: "absolute", right: 16, top: 16, width: 380, maxHeight: "92vh", overflow: "auto" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <div style={{ fontWeight: 700 }}>تعديل الموقع</div>
+            <button className="btn secondary" onClick={cancel}>
+              إغلاق
+            </button>
           </div>
 
-          <div className="form-row"><label>اسم الموقع</label>
-            <input type="text" value={edit.name} onChange={(e) => setEdit(s => ({ ...s, name: e.target.value }))} />
+          <div className="form-row">
+            <label>اسم الموقع</label>
+            <input type="text" value={edit.name} onChange={(e) => setEdit((s) => ({ ...s, name: e.target.value }))} />
           </div>
 
-          <div className="form-row"><label>الوصف</label>
-            <textarea rows={3} value={edit.description} onChange={(e) => setEdit(s => ({ ...s, description: e.target.value }))} />
+          <div className="form-row">
+            <label>الوصف</label>
+            <textarea
+              rows={3}
+              value={edit.description}
+              onChange={(e) => setEdit((s) => ({ ...s, description: e.target.value }))}
+            />
           </div>
 
-          <div className="form-row"><label>نوع الموقع</label>
-            <select value={edit.type} onChange={(e) => setEdit(s => ({ ...s, type: e.target.value as any }))}>
+          <div className="form-row">
+            <label>نوع الموقع</label>
+            <select value={edit.type} onChange={(e) => setEdit((s) => ({ ...s, type: e.target.value as any }))}>
               <option value="mixed">مختلط</option>
               <option value="security">أمني</option>
               <option value="traffic">مروري</option>
@@ -433,66 +550,128 @@ export default function MapPage() {
 
           <div className="form-row">
             <label>نطاق التمركز (متر): {edit.radius}</label>
-            <input className="range" type="range" min={5} max={500} step={5}
-              value={edit.radius} onChange={(e) => live({ radius: Number(e.target.value) })} />
+            <input
+              className="range"
+              type="range"
+              min={5}
+              max={500}
+              step={5}
+              value={edit.radius}
+              onChange={(e) => live({ radius: Number(e.target.value) })}
+            />
           </div>
 
-          <hr style={{ margin:"12px 0" }} />
+          <hr style={{ margin: "12px 0" }} />
 
-          <div className="form-row"><label>لون التعبئة</label>
+          <div className="form-row">
+            <label>لون التعبئة</label>
             <input type="color" value={edit.fill} onChange={(e) => live({ fill: e.target.value })} />
           </div>
 
-          <div className="form-row"><label>شفافية التعبئة: {edit.fillOpacity.toFixed(2)}</label>
-            <input className="range" type="range" min={0} max={1} step={0.05}
-              value={edit.fillOpacity} onChange={(e) => live({ fillOpacity: Number(e.target.value) })} />
+          <div className="form-row">
+            <label>شفافية التعبئة: {edit.fillOpacity.toFixed(2)}</label>
+            <input
+              className="range"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={edit.fillOpacity}
+              onChange={(e) => live({ fillOpacity: Number(e.target.value) })}
+            />
           </div>
 
-          <div className="form-row" style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <input id="strokeEnabled_edit" type="checkbox" checked={!!edit.strokeEnabled}
-              onChange={(e) => live({ strokeEnabled: e.target.checked })} />
-            <label htmlFor="strokeEnabled_edit" style={{ margin:0 }}>تفعيل الحدود</label>
+          <div className="form-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              id="strokeEnabled_edit"
+              type="checkbox"
+              checked={!!edit.strokeEnabled}
+              onChange={(e) => live({ strokeEnabled: e.target.checked })}
+            />
+            <label htmlFor="strokeEnabled_edit" style={{ margin: 0 }}>
+              تفعيل الحدود
+            </label>
           </div>
 
-          <div className="form-row"><label>لون الحدود</label>
-            <input type="color" disabled={!edit.strokeEnabled}
-              value={edit.stroke} onChange={(e) => live({ stroke: e.target.value })} />
+          <div className="form-row">
+            <label>لون الحدود</label>
+            <input
+              type="color"
+              disabled={!edit.strokeEnabled}
+              value={edit.stroke}
+              onChange={(e) => live({ stroke: e.target.value })}
+            />
           </div>
 
-          <div className="form-row"><label>عرض الحدود (px): {edit.strokeWidth}</label>
-            <input className="range" type="range" min={0} max={10} step={1} disabled={!edit.strokeEnabled}
-              value={edit.strokeWidth} onChange={(e) => live({ strokeWidth: Number(e.target.value) })} />
+          <div className="form-row">
+            <label>عرض الحدود (px): {edit.strokeWidth}</label>
+            <input
+              className="range"
+              type="range"
+              min={0}
+              max={10}
+              step={1}
+              disabled={!edit.strokeEnabled}
+              value={edit.strokeWidth}
+              onChange={(e) => live({ strokeWidth: Number(e.target.value) })}
+            />
           </div>
 
-          <div style={{ display:"flex", gap:8, marginTop:12 }}>
-            <button className="btn" onClick={saveEdit}>حفظ التعديلات</button>
-            <button className="btn red" onClick={deleteLoc}>حذف</button>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button className="btn" onClick={saveEdit}>
+              حفظ التعديلات
+            </button>
+            <button className="btn red" onClick={deleteLoc}>
+              حذف
+            </button>
           </div>
         </div>
       )}
 
       {/* محرر الإنشاء */}
       {mode === "create" && (
-        <div className="map-panel" style={{ position:"absolute", right:16, top:16, width:"var(--panel-w)", maxHeight:"92vh", overflow:"auto" }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
-            <div style={{ fontWeight:700 }}>إنشاء موقع جديد</div>
-            <button className="btn secondary" onClick={cancel}>إلغاء</button>
+        <div
+          className="map-panel"
+          style={{ position: "absolute", right: 16, top: 16, width: 380, maxHeight: "92vh", overflow: "auto" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <div style={{ fontWeight: 700 }}>إنشاء موقع جديد</div>
+            <button className="btn secondary" onClick={cancel}>
+              إلغاء
+            </button>
           </div>
 
-          <div style={{ background:"#f8fafc", border:"1px dashed #cbd5e1", borderRadius:8, padding:10, fontSize:13, color:"#334155", marginBottom:10 }}>
+          <div
+            style={{
+              background: "#f8fafc",
+              border: "1px dashed #cbd5e1",
+              borderRadius: 8,
+              padding: 10,
+              fontSize: 13,
+              color: "#334155",
+              marginBottom: 10,
+            }}
+          >
             اضغط على الخريطة لاختيار مركز الدائرة (تظهر فورًا).
           </div>
 
-          <div className="form-row"><label>اسم الموقع</label>
-            <input type="text" value={edit.name} onChange={(e) => setEdit(s => ({ ...s, name: e.target.value }))} />
+          <div className="form-row">
+            <label>اسم الموقع</label>
+            <input type="text" value={edit.name} onChange={(e) => setEdit((s) => ({ ...s, name: e.target.value }))} />
           </div>
 
-          <div className="form-row"><label>الوصف</label>
-            <textarea rows={3} value={edit.description} onChange={(e) => setEdit(s => ({ ...s, description: e.target.value }))} />
+          <div className="form-row">
+            <label>الوصف</label>
+            <textarea
+              rows={3}
+              value={edit.description}
+              onChange={(e) => setEdit((s) => ({ ...s, description: e.target.value }))}
+            />
           </div>
 
-          <div className="form-row"><label>نوع الموقع</label>
-            <select value={edit.type} onChange={(e) => setEdit(s => ({ ...s, type: e.target.value as any }))}>
+          <div className="form-row">
+            <label>نوع الموقع</label>
+            <select value={edit.type} onChange={(e) => setEdit((s) => ({ ...s, type: e.target.value as any }))}>
               <option value="mixed">مختلط</option>
               <option value="security">أمني</option>
               <option value="traffic">مروري</option>
@@ -501,40 +680,80 @@ export default function MapPage() {
 
           <div className="form-row">
             <label>نطاق التمركز (متر): {edit.radius}</label>
-            <input className="range" type="range" min={5} max={500} step={5}
-              value={edit.radius} onChange={(e) => live({ radius: Number(e.target.value) })} />
+            <input
+              className="range"
+              type="range"
+              min={5}
+              max={500}
+              step={5}
+              value={edit.radius}
+              onChange={(e) => live({ radius: Number(e.target.value) })}
+            />
           </div>
 
-          <hr style={{ margin:"12px 0" }} />
+          <hr style={{ margin: "12px 0" }} />
 
-          <div className="form-row"><label>لون التعبئة</label>
+          <div className="form-row">
+            <label>لون التعبئة</label>
             <input type="color" value={edit.fill} onChange={(e) => live({ fill: e.target.value })} />
           </div>
 
-          <div className="form-row"><label>شفافية التعبئة: {edit.fillOpacity.toFixed(2)}</label>
-            <input className="range" type="range" min={0} max={1} step={0.05}
-              value={edit.fillOpacity} onChange={(e) => live({ fillOpacity: Number(e.target.value) })} />
+          <div className="form-row">
+            <label>شفافية التعبئة: {edit.fillOpacity.toFixed(2)}</label>
+            <input
+              className="range"
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={edit.fillOpacity}
+              onChange={(e) => live({ fillOpacity: Number(e.target.value) })}
+            />
           </div>
 
-          <div className="form-row" style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <input id="strokeEnabled_new" type="checkbox" checked={!!edit.strokeEnabled}
-              onChange={(e) => live({ strokeEnabled: e.target.checked })} />
-            <label htmlFor="strokeEnabled_new" style={{ margin:0 }}>تفعيل الحدود</label>
+          <div className="form-row" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              id="strokeEnabled_new"
+              type="checkbox"
+              checked={!!edit.strokeEnabled}
+              onChange={(e) => live({ strokeEnabled: e.target.checked })}
+            />
+            <label htmlFor="strokeEnabled_new" style={{ margin: 0 }}>
+              تفعيل الحدود
+            </label>
           </div>
 
-          <div className="form-row"><label>لون الحدود</label>
-            <input type="color" disabled={!edit.strokeEnabled}
-              value={edit.stroke} onChange={(e) => live({ stroke: e.target.value })} />
+          <div className="form-row">
+            <label>لون الحدود</label>
+            <input
+              type="color"
+              disabled={!edit.strokeEnabled}
+              value={edit.stroke}
+              onChange={(e) => live({ stroke: e.target.value })}
+            />
           </div>
 
-          <div className="form-row"><label>عرض الحدود (px): {edit.strokeWidth}</label>
-            <input className="range" type="range" min={0} max={10} step={1} disabled={!edit.strokeEnabled}
-              value={edit.strokeWidth} onChange={(e) => live({ strokeWidth: Number(e.target.value) })} />
+          <div className="form-row">
+            <label>عرض الحدود (px): {edit.strokeWidth}</label>
+            <input
+              className="range"
+              type="range"
+              min={0}
+              max={10}
+              step={1}
+              disabled={!edit.strokeEnabled}
+              value={edit.strokeWidth}
+              onChange={(e) => live({ strokeWidth: Number(e.target.value) })}
+            />
           </div>
 
-          <div style={{ display:"flex", gap:8, marginTop:12 }}>
-            <button className="btn" onClick={saveCreate} disabled={draft.lat == null || draft.lng == null}>حفظ الموقع</button>
-            <button className="btn secondary" onClick={cancel}>إلغاء</button>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button className="btn" onClick={saveCreate} disabled={draft.lat == null || draft.lng == null}>
+              حفظ الموقع
+            </button>
+            <button className="btn secondary" onClick={cancel}>
+              إلغاء
+            </button>
           </div>
         </div>
       )}
