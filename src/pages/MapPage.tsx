@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { Map, LngLatLike, MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import "@/styles/map.css";
 import * as turf from "@turf/turf";
 
 import { trpc } from "@/lib/trpc";
@@ -12,7 +13,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Trash2, Save, X } from "lucide-react";
-import "@/styles/map.css";
 
 const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
 const DIRIYYAH_ZOOM = 13;
@@ -23,14 +23,31 @@ const STYLE_MAPTILER = MAPTILER_KEY
   : null;
 const STYLE_FALLBACK = "https://demotiles.maplibre.org/style.json";
 
-type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number };
-const parseStyle = (s?: string | null): StyleJSON => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
+type StyleJSON = {
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeEnabled?: boolean;
+};
+const parseStyle = (s?: string | null): StyleJSON => {
+  try {
+    return s ? JSON.parse(s) : {};
+  } catch {
+    return {};
+  }
+};
 const styleJSON = (o: StyleJSON) => JSON.stringify(o ?? {});
 const circlePolygonFor = (lng: number, lat: number, r: number) =>
   turf.circle([lng, lat], Math.max(1, r), { units: "meters", steps: 64 });
 
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div className="space-y-1"><Label className="text-sm">{label}</Label>{children}</div>;
+  return (
+    <div className="space-y-1">
+      <Label className="text-sm">{label}</Label>
+      {children}
+    </div>
+  );
 }
 
 export default function MapPage() {
@@ -43,7 +60,7 @@ export default function MapPage() {
 
   // === API
   const listQ = trpc.locations.list.useQuery();
-  const getQ  = trpc.locations.getById.useQuery(
+  const getQ = trpc.locations.getById.useQuery(
     { id: (selectedId ?? 0) as number },
     { enabled: selectedId != null, refetchOnWindowFocus: false }
   );
@@ -62,6 +79,7 @@ export default function MapPage() {
       const poly = circlePolygonFor(lng, lat, radius);
       return {
         type: "Feature",
+        id: Number(loc.id),
         geometry: poly.geometry,
         properties: {
           id: Number(loc.id),
@@ -72,7 +90,9 @@ export default function MapPage() {
           fillOpacity: s.fillOpacity ?? 0.25,
           stroke: s.stroke ?? "#b45309",
           strokeWidth: s.strokeWidth ?? 2,
-          lat, lng,
+          strokeEnabled: s.strokeEnabled ?? true,
+          lat,
+          lng,
         },
       } as any;
     });
@@ -80,7 +100,9 @@ export default function MapPage() {
   }, [listQ.data]);
 
   const geojsonRef = useRef<any>(geojson);
-  useEffect(() => { geojsonRef.current = geojson; }, [geojson]);
+  useEffect(() => {
+    geojsonRef.current = geojson;
+  }, [geojson]);
 
   const setSourceDataSafe = () => {
     const map = mapRef.current;
@@ -104,27 +126,68 @@ export default function MapPage() {
     mapRef.current = map;
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
-
-    // resize في أول frame لتفادي الخلفية البيضاء
     requestAnimationFrame(() => map.resize());
 
-    // لو فشل تحميل الستايل (401/403/404...) بدّل للـ fallback
+    const prepareLayers = () => {
+      if (!map.getSource("locations-src")) {
+        map.addSource("locations-src", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+          promoteId: "id",
+        });
+
+        map.addLayer({
+          id: "loc-fill",
+          type: "fill",
+          source: "locations-src",
+          paint: {
+            "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"],
+            "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25],
+          },
+        });
+
+        map.addLayer({
+          id: "loc-outline",
+          type: "line",
+          source: "locations-src",
+          layout: {
+            "line-cap": "round",
+            "line-join": "round",
+          },
+          paint: {
+            "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
+            "line-width": ["coalesce", ["get", "strokeWidth"], 2],
+            // إظهار/إخفاء الحدود
+            "line-opacity": [
+              "case",
+              ["==", ["get", "strokeEnabled"], true],
+              1,
+              0,
+            ],
+          },
+        });
+
+        map.addLayer({
+          id: "loc-center",
+          type: "circle",
+          source: "locations-src",
+          paint: {
+            "circle-radius": 4,
+            "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"],
+          },
+        });
+      }
+    };
+
+    // لو فشل الستايل بدّل fallback
     const onMapError = (e: any) => {
       const alreadyFallback = (map as any)._usesFallbackStyle === true;
       if (!alreadyFallback) {
-        console.warn("[map] style error -> switching to fallback", e?.error || e);
+        console.warn("[map] style error -> fallback", e?.error || e);
         map.setStyle(STYLE_FALLBACK);
         (map as any)._usesFallbackStyle = true;
         map.once("styledata", () => {
-          if (!map.getSource("locations-src")) {
-            map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
-            map.addLayer({ id: "loc-fill", type: "fill", source: "locations-src",
-              paint: { "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"], "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25] }});
-            map.addLayer({ id: "loc-outline", type: "line", source: "locations-src",
-              paint: { "line-color": ["coalesce", ["get", "stroke"], "#b45309"], "line-width": ["coalesce", ["get", "strokeWidth"], 2] }});
-            map.addLayer({ id: "loc-center", type: "circle", source: "locations-src",
-              paint: { "circle-radius": 4, "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"] }});
-          }
+          prepareLayers();
           setSourceDataSafe();
           setTimeout(() => map.resize(), 0);
         });
@@ -135,28 +198,7 @@ export default function MapPage() {
 
     map.on("load", () => {
       loadedRef.current = true;
-
-      if (!map.getSource("locations-src")) {
-        map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
-
-        map.addLayer({
-          id: "loc-fill", type: "fill", source: "locations-src",
-          paint: { "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"],
-                   "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25] }
-        });
-
-        map.addLayer({
-          id: "loc-outline", type: "line", source: "locations-src",
-          paint: { "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
-                   "line-width": ["coalesce", ["get", "strokeWidth"], 2] }
-        });
-
-        map.addLayer({
-          id: "loc-center", type: "circle", source: "locations-src",
-          paint: { "circle-radius": 4, "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"] }
-        });
-      }
-
+      prepareLayers();
       setSourceDataSafe();
       setTimeout(() => map.resize(), 0);
     });
@@ -181,17 +223,23 @@ export default function MapPage() {
       setSourceDataSafe();
       map.resize();
     } else {
-      map.once("load", () => { setSourceDataSafe(); map.resize(); });
+      map.once("load", () => {
+        setSourceDataSafe();
+        map.resize();
+      });
     }
   }, [geojson]);
 
   // أعد القياس عند فتح/إغلاق المحرر
-  useEffect(() => { setTimeout(() => mapRef.current?.resize(), 50); }, [editorOpen]);
+  useEffect(() => {
+    setTimeout(() => mapRef.current?.resize(), 50);
+  }, [editorOpen]);
 
   // === Hover popup
   function showHoverPopup(e: MapLayerMouseEvent) {
     const map = mapRef.current!;
-    const f = e.features?.[0]; if (!f) return;
+    const f = e.features?.[0];
+    if (!f) return;
     const p = f.properties as any;
     const html = `<div style="font-family: system-ui; min-width:220px">
       <div style="font-weight:600; margin-bottom:4px">${p.name ?? "موقع"}</div>
@@ -200,19 +248,29 @@ export default function MapPage() {
       <div style="font-size:12px; opacity:.8">الإحداثيات: ${(+p.lat).toFixed(6)}, ${(+p.lng).toFixed(6)}</div>
       <div style="margin-top:6px; font-size:12px; color:#555">انقر للتعديل…</div>
     </div>`;
-    if (!popupRef.current) popupRef.current = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
+    if (!popupRef.current)
+      popupRef.current = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        offset: 8,
+      });
     popupRef.current.setLngLat(e.lngLat).setHTML(html).addTo(map);
   }
   const hideHoverPopup = () => popupRef.current?.remove();
 
-  // ربط أحداث التفاعل
+  // تفاعل الماوس
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const onEnter = () => { map.getCanvas().style.cursor = "pointer"; };
-    const onLeave = () => { map.getCanvas().style.cursor = ""; hideHoverPopup(); };
-    const onMove  = (e: any) => showHoverPopup(e);
+    const onEnter = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    const onLeave = () => {
+      map.getCanvas().style.cursor = "";
+      hideHoverPopup();
+    };
+    const onMove = (e: any) => showHoverPopup(e);
     const onClick = (e: any) => {
       const f = e.features?.[0];
       const raw = (f && (f.id as any)) ?? (f?.properties as any)?.id;
@@ -240,14 +298,49 @@ export default function MapPage() {
     };
   }, []);
 
-  // === حالة المحرر
+  // === حالة المحرر + معاينة حيّة
   const loc = getQ.data as any;
   const s = parseStyle(loc?.notes);
   const [edit, setEdit] = useState({
-    name: "", description: "", type: "mixed" as "mixed" | "security" | "traffic",
-    radius: 30, fill: s.fill ?? "#f59e0b", fillOpacity: s.fillOpacity ?? 0.25,
-    stroke: s.stroke ?? "#b45309", strokeWidth: s.strokeWidth ?? 2,
+    name: "",
+    description: "",
+    type: "mixed" as "mixed" | "security" | "traffic",
+    radius: 30,
+    fill: s.fill ?? "#f59e0b",
+    fillOpacity: s.fillOpacity ?? 0.25,
+    stroke: s.stroke ?? "#b45309",
+    strokeWidth: s.strokeWidth ?? 2,
+    strokeEnabled: s.strokeEnabled ?? true,
   });
+
+  // دمج + معاينة فورية على الخريطة
+  function applyLivePreview(partial: Partial<typeof edit>) {
+    setEdit((prev) => {
+      const next = { ...prev, ...partial };
+      // عدّل الـ Feature المناسب داخل geojsonRef
+      const fc = geojsonRef.current as turf.FeatureCollection;
+      const idx = fc.features.findIndex((f: any) => Number(f.id) === selectedId);
+      if (idx >= 0) {
+        const f: any = fc.features[idx];
+        // خصائص الرسم
+        f.properties.fill = next.fill;
+        f.properties.fillOpacity = next.fillOpacity;
+        f.properties.stroke = next.stroke;
+        f.properties.strokeWidth = next.strokeWidth;
+        f.properties.strokeEnabled = next.strokeEnabled;
+        f.properties.radius = next.radius;
+
+        // الشكل (نطاق الدائرة)
+        const lng = Number(f.properties.lng);
+        const lat = Number(f.properties.lat);
+        const poly = circlePolygonFor(lng, lat, next.radius);
+        f.geometry = poly.geometry;
+      }
+      // حدّث المصدر
+      setSourceDataSafe();
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!loc) return;
@@ -261,13 +354,18 @@ export default function MapPage() {
       fillOpacity: st.fillOpacity ?? 0.25,
       stroke: st.stroke ?? "#b45309",
       strokeWidth: st.strokeWidth ?? 2,
+      strokeEnabled: st.strokeEnabled ?? true,
     });
   }, [loc?.id]);
 
   async function saveChanges() {
     if (selectedId == null) return;
     const notes = styleJSON({
-      fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke, strokeWidth: edit.strokeWidth,
+      fill: edit.fill,
+      fillOpacity: edit.fillOpacity,
+      stroke: edit.stroke,
+      strokeWidth: edit.strokeWidth,
+      strokeEnabled: edit.strokeEnabled,
     });
     try {
       await updateM.mutateAsync({
@@ -283,7 +381,13 @@ export default function MapPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ name: edit.name, description: edit.description, locationType: edit.type, radius: edit.radius, notes }),
+        body: JSON.stringify({
+          name: edit.name,
+          description: edit.description,
+          locationType: edit.type,
+          radius: edit.radius,
+          notes,
+        }),
       });
     }
     await Promise.all([getQ.refetch(), listQ.refetch()]);
@@ -296,7 +400,10 @@ export default function MapPage() {
     try {
       await deleteM.mutateAsync({ id: selectedId });
     } catch {
-      await fetch(`/api/locations/${selectedId}`, { method: "DELETE", credentials: "include" });
+      await fetch(`/api/locations/${selectedId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
     }
     setEditorOpen(false);
     setSelectedId(null);
@@ -312,12 +419,24 @@ export default function MapPage() {
       {/* قائمة المواقع */}
       <div className="map-panel absolute left-4 top-4 w-[260px] max-h-[80vh] overflow-auto rounded-lg shadow-xl p-0">
         <Card className="shadow-none border-0">
-          <CardHeader><CardTitle className="text-sm">المواقع</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle className="text-sm">المواقع</CardTitle>
+          </CardHeader>
           <CardContent className="space-y-2">
             {(listQ.data ?? []).map((it: any) => (
-              <div key={it.id} className="flex items-center justify-between text-sm border rounded px-2 py-1 bg-white">
+              <div
+                key={it.id}
+                className="flex items-center justify-between text-sm border rounded px-2 py-1 bg-white"
+              >
                 <div className="truncate">{it.name ?? `#${it.id}`}</div>
-                <Button size="sm" variant="secondary" onClick={() => { setSelectedId(Number(it.id)); setEditorOpen(true); }}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setSelectedId(Number(it.id));
+                    setEditorOpen(true);
+                  }}
+                >
                   تعديل
                 </Button>
               </div>
@@ -328,7 +447,7 @@ export default function MapPage() {
 
       {/* محرر الموقع */}
       {editorOpen && loc && (
-        <div className="map-panel absolute top-4 right-4 w-[360px] max-h-[92vh] overflow-auto rounded-lg shadow-2xl">
+        <div className="map-panel absolute top-4 right-4 w-[380px] max-h-[92vh] overflow-auto rounded-lg shadow-2xl">
           <Card className="shadow-none border-0">
             <CardHeader className="flex justify-between items-center">
               <CardTitle className="text-base">تعديل الموقع</CardTitle>
@@ -339,14 +458,26 @@ export default function MapPage() {
             <CardContent className="space-y-4">
               <div className="space-y-3">
                 <FieldRow label="اسم الموقع">
-                  <Input value={edit.name} onChange={(e) => setEdit(s => ({ ...s, name: e.target.value }))} />
+                  <Input
+                    value={edit.name}
+                    onChange={(e) => setEdit((s) => ({ ...s, name: e.target.value }))}
+                  />
                 </FieldRow>
                 <FieldRow label="الوصف">
-                  <Textarea rows={3} value={edit.description} onChange={(e) => setEdit(s => ({ ...s, description: e.target.value }))} />
+                  <Textarea
+                    rows={3}
+                    value={edit.description}
+                    onChange={(e) => setEdit((s) => ({ ...s, description: e.target.value }))}
+                  />
                 </FieldRow>
                 <FieldRow label="نوع الموقع">
-                  <Select value={edit.type} onValueChange={(v: any) => setEdit(s => ({ ...s, type: v }))}>
-                    <SelectTrigger><SelectValue placeholder="نوع" /></SelectTrigger>
+                  <Select
+                    value={edit.type}
+                    onValueChange={(v: any) => setEdit((s) => ({ ...s, type: v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="نوع" />
+                    </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="mixed">مختلط</SelectItem>
                       <SelectItem value="security">أمني</SelectItem>
@@ -354,8 +485,15 @@ export default function MapPage() {
                     </SelectContent>
                   </Select>
                 </FieldRow>
+
                 <FieldRow label={`نطاق التمركز (متر): ${edit.radius}`}>
-                  <Slider value={[edit.radius]} min={5} max={500} step={5} onValueChange={(v) => setEdit(s => ({ ...s, radius: v[0] }))} />
+                  <Slider
+                    value={[edit.radius]}
+                    min={5}
+                    max={500}
+                    step={5}
+                    onValueChange={(v) => applyLivePreview({ radius: v[0] })}
+                  />
                 </FieldRow>
               </div>
 
@@ -363,17 +501,55 @@ export default function MapPage() {
 
               <div className="space-y-3">
                 <div className="font-semibold text-sm">نمط الدائرة</div>
+
                 <FieldRow label="لون التعبئة">
-                  <input type="color" value={edit.fill} onChange={(e) => setEdit(s => ({ ...s, fill: e.target.value }))} />
+                  <input
+                    type="color"
+                    value={edit.fill}
+                    onChange={(e) => applyLivePreview({ fill: e.target.value })}
+                  />
                 </FieldRow>
-                <FieldRow label={`شفافية التعبئة: ${edit.fillOpacity}`}>
-                  <Slider value={[edit.fillOpacity]} min={0} max={1} step={0.05} onValueChange={(v) => setEdit(s => ({ ...s, fillOpacity: v[0] }))} />
+
+                <FieldRow label={`شفافية التعبئة: ${edit.fillOpacity.toFixed(2)}`}>
+                  <Slider
+                    value={[edit.fillOpacity]}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onValueChange={(v) => applyLivePreview({ fillOpacity: v[0] })}
+                  />
                 </FieldRow>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    id="strokeEnabled"
+                    type="checkbox"
+                    checked={!!edit.strokeEnabled}
+                    onChange={(e) => applyLivePreview({ strokeEnabled: e.target.checked })}
+                  />
+                  <Label htmlFor="strokeEnabled" className="text-sm">
+                    تفعيل الحدود
+                  </Label>
+                </div>
+
                 <FieldRow label="لون الحدود">
-                  <input type="color" value={edit.stroke} onChange={(e) => setEdit(s => ({ ...s, stroke: e.target.value }))} />
+                  <input
+                    type="color"
+                    value={edit.stroke}
+                    onChange={(e) => applyLivePreview({ stroke: e.target.value })}
+                    disabled={!edit.strokeEnabled}
+                  />
                 </FieldRow>
+
                 <FieldRow label={`عرض الحدود (px): ${edit.strokeWidth}`}>
-                  <Slider value={[edit.strokeWidth]} min={0} max={10} step={1} onValueChange={(v) => setEdit(s => ({ ...s, strokeWidth: v[0] }))} />
+                  <Slider
+                    value={[edit.strokeWidth]}
+                    min={0}
+                    max={10}
+                    step={1}
+                    onValueChange={(v) => applyLivePreview({ strokeWidth: v[0] })}
+                    disabled={!edit.strokeEnabled}
+                  />
                 </FieldRow>
               </div>
 
