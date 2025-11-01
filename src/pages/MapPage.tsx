@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { useLocation } from "wouter";
+import { useEffect, useMemo, useRef, useState } from "react";
+import maplibregl, { Map, LngLatLike, MapLayerMouseEvent } from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+import * as turf from "@turf/turf";
+
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,1123 +10,411 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import axios from "axios";
-import { Plus, Trash2, Edit2, MapPin, Users, Info, Home, X, Share2, Loader } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
+import { Plus, Trash2, Edit2, Save, X } from "lucide-react";
 
-import maplibregl from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+// ====== إعدادات الدرعية الافتراضية ======
+const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
+const DIRIYYAH_ZOOM = 13;
 
-const EPHEMERAL_ASSIGNMENTS =
-  (import.meta.env.VITE_EPHEMERAL_ASSIGNMENTS ?? "true") === "true";
+// ====== مساعدات تخزين النمط داخل notes ======
+type StyleJSON = {
+  fill?: string;          // لون التعبئة
+  fillOpacity?: number;   // 0..1
+  stroke?: string;        // لون الحدود
+  strokeWidth?: number;   // بكسل
+};
 
-/* ===================== إعداد الدرعية (الوضع الافتراضي) ===================== */
-// مركز الدرعية التقريبي [lng, lat]
-const DIRIYAH_CENTER_LNG_LAT: [number, number] = [46.67, 24.74];
-const DIRIYAH_ZOOM = 13;
-
-// حدود بسيطة للقبول (داخل الدرعية تقريبًا)
-const isInDiriyah = (lat: number, lng: number) =>
-  lat >= 24.600000 && lat <= 24.900000 && lng >= 46.400000 && lng <= 46.800000;
-/* ========================================================================== */
-
-interface Location {
-  id: number;
-  name: string;
-  description: string | null;
-  latitude: string;
-  longitude: string;
-  locationType: "security" | "traffic" | "mixed";
-  radius: number | null;
-  isActive: number;
-  createdAt: Date;
-  updatedAt: Date;
+function parseStyleNotes(notes?: string | null): StyleJSON {
+  if (!notes) return {};
+  try {
+    const obj = JSON.parse(notes);
+    if (obj && typeof obj === "object" && (obj.fill || obj.stroke || obj.fillOpacity || obj.strokeWidth)) {
+      return obj as StyleJSON;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+function stringifyStyleNotes(style: StyleJSON): string {
+  return JSON.stringify(style ?? {});
 }
 
-interface Personnel {
-  id: number;
-  locationId: number;
-  name: string;
-  role: string;
-  phone: string | null;
-  email: string | null;
-  personnelType: "security" | "traffic";
-  notes: string | null;
-  createdAt: Date;
-  updatedAt: Date;
+// ====== تحويل نقطة + نصف قطر إلى مضلع دائرة ======
+function circlePolygonFor(lng: number, lat: number, radiusMeters: number) {
+  const circle = turf.circle([lng, lat], Math.max(1, radiusMeters), {
+    units: "meters",
+    steps: 64,
+  });
+  return circle;
+}
+
+// ====== UI: فورم التحرير ======
+function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-sm">{label}</Label>
+      {children}
+    </div>
+  );
 }
 
 export default function MapPage() {
-  const [, navigate] = useLocation();
-
-  // refs للخريطة وعناصرها
-  const mapContainer = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
+  const mapRef = useRef<Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const geolocateRef = useRef<maplibregl.GeolocateControl | null>(null);
-  const tempMarkerRef = useRef<maplibregl.Marker | null>(null);
 
-  // حالات الواجهة
-  const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
-  const [sessionPersonnel, setSessionPersonnel] = useState<
-    Record<
-      number,
-      Array<{
-        id: number;
-        name: string;
-        role: "قائد فريق" | "رجل أمن ثاني";
-        phone?: string;
-        email?: string;
-        personnelType: "security" | "traffic";
-        notes?: string | null;
-      }>
-    >
-  >({});
-  const [showAddLocation, setShowAddLocation] = useState(false);
-  const [showAddPersonnel, setShowAddPersonnel] = useState(false);
-  const [showPersonnelDetails, setShowPersonnelDetails] = useState(false);
-  const [editingLocation, setEditingLocation] = useState<Location | null>(null);
-  const [editingPersonnel, setEditingPersonnel] = useState<Personnel | null>(null);
-  const [isSelectingLocation, setIsSelectingLocation] = useState(false);
-  const [showShareMenu, setShowShareMenu] = useState(false);
-  const [isZoomedIn, setIsZoomedIn] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
 
-  // نماذج الإدخال
-  const [locationForm, setLocationForm] = useState<{
-    name: string;
-    description: string;
-    latitude: string;
-    longitude: string;
-    locationType: "security" | "traffic" | "mixed";
-    radius: number;
-  }>({
-    name: "",
-    description: "",
-    latitude: String(DIRIYAH_CENTER_LNG_LAT[1]), // 24.74
-    longitude: String(DIRIYAH_CENTER_LNG_LAT[0]), // 46.67
-    locationType: "mixed",
-    radius: 50,
-  });
-
-  const [personnelForm, setPersonnelForm] = useState<{
-    name: string;
-    role: string;
-    phone: string;
-    email: string;
-    personnelType: "security" | "traffic";
-    notes: string | null;
-  }>({
-    name: "",
-    role: "",
-    phone: "",
-    email: "",
-    personnelType: "security",
-    notes: null,
-  });
-
-  // TRPC
-  const locationsQuery = trpc.locations.list.useQuery();
-  const locationDetailsQuery = trpc.locations.getById.useQuery(
-    { id: selectedLocation?.id || 0 },
-    { enabled: !!selectedLocation }
+  // بيانات من الخادم
+  const listQ = trpc.locations.list.useQuery();
+  const getQ = trpc.locations.getById.useQuery(
+    { id: selectedId ?? "" },
+    { enabled: !!selectedId }
   );
 
-  const createLocationMutation = trpc.locations.create.useMutation({
-    onSuccess: () => {
-      locationsQuery.refetch();
-      resetLocationUI();
-    },
-    onError: (err) => {
-      console.error("TRPC create location error:", err);
-      alert("تعذر حفظ الموقع (تحقق من الإحداثيات داخل نطاق الدرعية).");
-    },
-  });
+  const updateM = trpc.locations.update.useMutation();
+  const deleteM = trpc.locations.delete.useMutation();
 
-  const updateLocationMutation = trpc.locations.update.useMutation({
-    onSuccess: () => {
-      locationsQuery.refetch();
-      setEditingLocation(null);
-      resetLocationUI();
-    },
-    onError: (err) => {
-      console.error("TRPC update location error:", err);
-      alert("تعذر تحديث الموقع");
-    },
-  });
+  // Personnel
+  const pplListQ = trpc.personnel.listByLocation.useQuery(
+    { locationId: selectedId ?? "" },
+    { enabled: !!selectedId }
+  );
+  const pplCreateM = trpc.personnel.create.useMutation();
+  const pplDeleteM = trpc.personnel.delete.useMutation();
 
-  const deleteLocationMutation = trpc.locations.delete.useMutation({
-    onSuccess: () => {
-      locationsQuery.refetch();
-      setSelectedLocation(null);
-    },
-    onError: (err) => {
-      console.error("TRPC delete location error:", err);
-      alert("تعذر حذف الموقع");
-    },
-  });
-
-  const createPersonnelMutation = trpc.personnel.create.useMutation({
-    onSuccess: () => {
-      if (selectedLocation) locationDetailsQuery.refetch();
-      setShowAddPersonnel(false);
-      setPersonnelForm({
-        name: "",
-        role: "",
-        phone: "",
-        email: "",
-        personnelType: "security",
-        notes: null,
-      });
-    },
-    onError: (err) => {
-      console.error("TRPC create personnel error:", err);
-      alert("تعذر إضافة الفرد");
-    },
-  });
-
-  const updatePersonnelMutation = trpc.personnel.update.useMutation({
-    onSuccess: () => {
-      if (selectedLocation) locationDetailsQuery.refetch();
-      setEditingPersonnel(null);
-    },
-    onError: (err) => {
-      console.error("TRPC update personnel error:", err);
-      alert("تعذر تحديث بيانات الفرد");
-    },
-  });
-
-  const deletePersonnelMutation = trpc.personnel.delete.useMutation({
-    onSuccess: () => {
-      if (selectedLocation) locationDetailsQuery.refetch();
-    },
-    onError: (err) => {
-      console.error("TRPC delete personnel error:", err);
-      alert("تعذر حذف الفرد");
-    },
-  });
-
-  function resetLocationUI() {
-    setShowAddLocation(false);
-    setIsSelectingLocation(false);
-    if (tempMarkerRef.current) {
-      tempMarkerRef.current.remove();
-      tempMarkerRef.current = null;
-    }
-    setLocationForm({
-      name: "",
-      description: "",
-      latitude: String(DIRIYAH_CENTER_LNG_LAT[1]),
-      longitude: String(DIRIYAH_CENTER_LNG_LAT[0]),
-      locationType: "mixed",
-      radius: 50,
-    });
-  }
-
-  // تحويل بيانات المواقع إلى GeoJSON
-  const toGeoJSON = (items: Location[]) => ({
-    type: "FeatureCollection",
-    features: (items || []).map((p) => ({
-      type: "Feature",
-      geometry: {
-        type: "Point",
-        coordinates: [parseFloat(p.longitude), parseFloat(p.latitude)],
-      },
-      properties: {
-        id: p.id,
-        name: p.name,
-        type: p.locationType,
-        radius: p.radius ?? 100,
-      },
-    })),
-  });
-
-  // إنشاء الخريطة (مرة واحدة)
+  // ====== تهيئة الخريطة ======
   useEffect(() => {
-    if (!mapContainer.current || mapRef.current) return;
-
-    const MT_KEY = import.meta.env.VITE_MAPTILER_KEY;
-    const styleUrl = MT_KEY
-      ? `https://api.maptiler.com/maps/streets-v2/style.json?key=${MT_KEY}`
-      : "https://demotiles.maplibre.org/style.json";
+    if (mapRef.current) return;
 
     const map = new maplibregl.Map({
-      container: mapContainer.current,
-      style: styleUrl,
-      center: DIRIYAH_CENTER_LNG_LAT, // ✅ يبدأ في الدرعية
-      zoom: DIRIYAH_ZOOM,             // ✅ زوم افتراضي مناسب
+      container: "map",
+      style: `https://api.maptiler.com/maps/streets/style.json?key=${import.meta.env.VITE_MAPTILER_KEY}`,
+      center: DIRIYYAH_CENTER as LngLatLike,
+      zoom: DIRIYYAH_ZOOM,
       attributionControl: false,
     });
     mapRef.current = map;
-
-    // Controls
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
-    map.addControl(new maplibregl.FullscreenControl(), "bottom-right");
-    map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
-    const geolocate = new maplibregl.GeolocateControl({
-      positionOptions: { enableHighAccuracy: true },
-      showUserLocation: true,
-      trackUserLocation: false,
-    });
-    geolocateRef.current = geolocate;
-    map.addControl(geolocate, "top-left");
-
-    popupRef.current = new maplibregl.Popup({
-      closeButton: false,
-      closeOnClick: true,
-      maxWidth: "360px",
-    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
     map.on("load", () => {
-      // مصدر المواقع مع عنقدة
-      map.addSource("sites", {
+      // مصدر المواقع كـ GeoJSON
+      map.addSource("locations-src", {
         type: "geojson",
-        data: toGeoJSON(locationsQuery.data || []),
-        cluster: true,
-        clusterMaxZoom: 16,
-        clusterRadius: 40,
-      } as any);
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+        promoteId: "id",
+      });
 
-      // عناقيد
+      // طبقة تعبئة (الدائرة كـ بوليغون)
       map.addLayer({
-        id: "clusters",
-        type: "circle",
-        source: "sites",
-        filter: ["has", "point_count"],
+        id: "loc-fill",
+        type: "fill",
+        source: "locations-src",
         paint: {
-          "circle-color": ["step", ["get", "point_count"], "#C8B88A", 10, "#9D7B4F", 25, "#5B3A1E"],
-          "circle-radius": ["step", ["get", "point_count"], 14, 10, 22, 25, 30],
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1.5,
+          "fill-color": ["coalesce", ["get", "fill"], "#d97706"], // افتراضي برتقالي
+          "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25],
         },
       });
 
+      // طبقة حدود
       map.addLayer({
-        id: "cluster-count",
-        type: "symbol",
-        source: "sites",
-        filter: ["has", "point_count"],
-        layout: { "text-field": ["get", "point_count_abbreviated"], "text-size": 12 },
-        paint: { "text-color": "#ffffff" },
-      });
-
-      // نقاط منفردة — دوائر صغيرة
-      map.addLayer({
-        id: "site-point",
-        type: "circle",
-        source: "sites",
-        filter: ["!", ["has", "point_count"]],
+        id: "loc-outline",
+        type: "line",
+        source: "locations-src",
         paint: {
-          "circle-color": [
-            "match",
-            ["get", "type"],
-            "security",
-            "#a85a4a",
-            "traffic",
-            "#4a7ba7",
-            /* mixed */ "#a87a4a",
-          ],
-          "circle-radius": 6,
-          "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1.5,
+          "line-color": ["coalesce", ["get", "stroke"], "#7c2d12"],
+          "line-width": ["coalesce", ["get", "strokeWidth"], 2],
         },
       });
 
-      // تكبير عند الضغط على عنقود
-      map.on("click", "clusters", (e: any) => {
-        const features = map.queryRenderedFeatures(e.point, { layers: ["clusters"] });
-        const clusterId = (features[0].properties as any).cluster_id;
-        const src = map.getSource("sites") as any;
-        src.getClusterExpansionZoom(clusterId, (err: any, zoom: number) => {
-          if (err) return;
-          map.easeTo({ center: (features[0].geometry as any).coordinates, zoom });
-        });
+      // الطبقة للنقطة المركزية (اختياري)
+      map.addLayer({
+        id: "loc-center",
+        type: "circle",
+        source: "locations-src",
+        paint: {
+          "circle-radius": 4,
+          "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"],
+        },
       });
 
-      // بوب-أب باسم الموقع + زر "عرض التفاصيل"
-      map.on("click", "site-point", (e: any) => {
-        const f = e.features?.[0];
-        if (!f) return;
-        const coords = (f.geometry as any).coordinates.slice();
-        const props = f.properties as any;
+      // Hover → Popup
+      map.on("mousemove", "loc-fill", (e) => showHoverPopup(e));
+      map.on("mouseleave", "loc-fill", hideHoverPopup);
 
-        const html = `
-          <div dir="rtl" style="min-width:220px;font-family:Tahoma,system-ui">
-            <div style="font-weight:700;font-size:14px;margin-bottom:6px">${props.name}</div>
-            <button id="show-${props.id}"
-              style="background:#5B3A1E;color:#fff;border:none;padding:6px 10px;border-radius:8px;cursor:pointer">
-              عرض التفاصيل
-            </button>
-          </div>
-        `;
-        popupRef.current!.setLngLat(coords).setHTML(html).addTo(map);
-
-        setTimeout(() => {
-          const btn = document.getElementById(`show-${props.id}`);
-          if (btn) {
-            btn.onclick = () => {
-              const original = (locationsQuery.data || []).find((x) => x.id === props.id);
-              if (original) {
-                setSelectedLocation(original);
-                setShowPersonnelDetails(true);
-                map.easeTo({ center: coords as [number, number], zoom: 16 });
-                setIsZoomedIn(true);
-              }
-              popupRef.current?.remove();
-            };
-          }
-        }, 0);
+      // Click → فتح المحرر
+      map.on("click", "loc-fill", (e) => {
+        const id = e.features?.[0]?.properties?.id as string | undefined;
+        if (id) {
+          setSelectedId(id);
+          setEditorOpen(true);
+        }
       });
-
-      map.on("mouseenter", "site-point", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "site-point", () => (map.getCanvas().style.cursor = ""));
     });
 
     return () => {
       map.remove();
       mapRef.current = null;
-      tempMarkerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // تحديث بيانات المصدر عند تغيّر المواقع
+  // ====== تحميل/تحديث GeoJSON على الخريطة ======
+  const geojson = useMemo(() => {
+    if (!listQ.data) return { type: "FeatureCollection", features: [] } as turf.FeatureCollection;
+
+    const features = listQ.data.map((loc) => {
+      const lat = Number(loc.latitude);
+      const lng = Number(loc.longitude);
+      const radius = Number(loc.radius || 30);
+      const style = parseStyleNotes(loc.notes);
+
+      // بوليغون الدائرة
+      const poly = circlePolygonFor(lng, lat, radius);
+      // سنضع خصائص العرض المطلوبة مباشرة داخل properties
+      const properties = {
+        id: String(loc.id),
+        name: loc.name,
+        type: loc.locationType,
+        radius,
+        fill: style.fill ?? "#f59e0b",
+        fillOpacity: style.fillOpacity ?? 0.25,
+        stroke: style.stroke ?? "#b45309",
+        strokeWidth: style.strokeWidth ?? 2,
+        lat,
+        lng,
+      };
+
+      return {
+        type: "Feature",
+        geometry: poly.geometry,
+        properties,
+      } as turf.Feature;
+    });
+
+    return {
+      type: "FeatureCollection",
+      features,
+    } as turf.FeatureCollection;
+  }, [listQ.data]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
-    const src = map.getSource("sites") as any;
-    if (src?.setData) src.setData(toGeoJSON(locationsQuery.data || []));
-  }, [locationsQuery.data]);
+    const src = map.getSource("locations-src") as maplibregl.GeoJSONSource | undefined;
+    if (src) src.setData(geojson as any);
+  }, [geojson]);
 
-  // وضع اختيار موقع جديد
+  // ====== Hover Popup ======
+  function showHoverPopup(e: MapLayerMouseEvent) {
+    const map = mapRef.current!;
+    const f = e.features?.[0];
+    if (!f) return;
+
+    const p = f.properties as any;
+    const html = `
+      <div style="font-family: system-ui; min-width:220px">
+        <div style="font-weight:600; margin-bottom:4px">${p.name ?? "موقع"}</div>
+        <div style="font-size:12px; opacity:.8">النوع: ${p.type}</div>
+        <div style="font-size:12px; opacity:.8">النطاق: ${p.radius} م</div>
+        <div style="font-size:12px; opacity:.8">الإحداثيات: ${(+p.lat).toFixed(6)}, ${(+p.lng).toFixed(6)}</div>
+        <div style="margin-top:6px; font-size:12px; color:#555">انقر للتعديل…</div>
+      </div>
+    `;
+
+    if (!popupRef.current) {
+      popupRef.current = new maplibregl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        offset: 8,
+      });
+    }
+    popupRef.current.setLngLat(e.lngLat).setHTML(html).addTo(map);
+  }
+  function hideHoverPopup() {
+    popupRef.current?.remove();
+  }
+
+  // ====== محرّر الموقع ======
+  const loc = getQ.data;
+  const style = useMemo<StyleJSON>(() => parseStyleNotes(loc?.notes), [loc?.notes]);
+
+  const [edit, setEdit] = useState({
+    name: "",
+    description: "",
+    type: "mixed" as "mixed" | "security" | "traffic",
+    radius: 30,
+    fill: style.fill ?? "#f59e0b",
+    fillOpacity: style.fillOpacity ?? 0.25,
+    stroke: style.stroke ?? "#b45309",
+    strokeWidth: style.strokeWidth ?? 2,
+  });
+
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const onMapClick = (e: maplibregl.MapMouseEvent & maplibregl.EventData) => {
-      if (!isSelectingLocation) return;
-
-      // استخدم wrap لضمان الإحداثيات ضمن النطاق العالمي الصحيح
-      const wrapped = (e.lngLat as maplibregl.LngLat).wrap();
-      const lat = Number(wrapped.lat.toFixed(6));
-      const lng = Number(wrapped.lng.toFixed(6));
-
-      // التحقق أن النقطة داخل حدود الدرعية
-      if (!isInDiriyah(lat, lng)) {
-        alert("اختر نقطة داخل نطاق الدرعية.");
-        return;
-      }
-
-      if (tempMarkerRef.current) {
-        tempMarkerRef.current.remove();
-        tempMarkerRef.current = null;
-      }
-
-      const m = new maplibregl.Marker({ color: "#5B3A1E" })
-        .setLngLat([lng, lat])
-        .addTo(map);
-      tempMarkerRef.current = m;
-
-      setLocationForm((prev) => ({
-        ...prev,
-        latitude: String(lat),
-        longitude: String(lng),
-      }));
-    };
-
-    if (isSelectingLocation) {
-      // عند بدء الاختيار اعرض الدرعية وكرّسير التقاطع
-      map.easeTo({ center: DIRIYAH_CENTER_LNG_LAT, zoom: DIRIYAH_ZOOM });
-      map.getCanvas().style.cursor = "crosshair";
-      map.on("click", onMapClick);
-    } else {
-      map.getCanvas().style.cursor = "";
-      map.off("click", onMapClick);
-    }
-
-    return () => {
-      map.off("click", onMapClick);
-      map.getCanvas().style.cursor = "";
-    };
-  }, [isSelectingLocation]);
-
-  // وظائف التحكم
-  const handleZoomToLocation = (location: Location) => {
-    const map = mapRef.current;
-    if (!map) return;
-    const lat = parseFloat(location.latitude);
-    const lng = parseFloat(location.longitude);
-    map.easeTo({ center: [lng, lat], zoom: 16 });
-    setIsZoomedIn(true);
-  };
-
-  const handleZoomOut = () => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.easeTo({ center: DIRIYAH_CENTER_LNG_LAT, zoom: DIRIYAH_ZOOM });
-    setIsZoomedIn(false);
-  };
-
-  const handleShowUserLocation = () => {
-    geolocateRef.current?.trigger();
-  };
-
-  // حفظ الموقع
-  const handleAddLocation = async () => {
-    try {
-      if (!locationForm.name.trim()) {
-        alert("فضلاً أدخل اسم الموقع");
-        return;
-      }
-
-      const lat = Number(locationForm.latitude);
-      const lng = Number(locationForm.longitude);
-
-      if (Number.isNaN(lat) || Number.isNaN(lng)) {
-        alert("فضلاً اختر إحداثيات صحيحة من الخريطة");
-        return;
-      }
-      if (!isInDiriyah(lat, lng)) {
-        alert("الإحداثيات خارج نطاق الدرعية.");
-        return;
-      }
-
-      if (editingLocation) {
-        await updateLocationMutation.mutateAsync({
-          id: editingLocation.id,
-          ...locationForm,
-          latitude: String(lat),
-          longitude: String(lng),
-        });
-      } else {
-        // جرّب tRPC أولاً
-        let saved = false;
-        try {
-          await createLocationMutation.mutateAsync({
-            ...locationForm,
-            latitude: String(lat),
-            longitude: String(lng),
-          } as any);
-          saved = true;
-        } catch (e) {
-          console.warn("tRPC create failed, falling back to REST:", e);
-        }
-
-        // REST كاحتياط
-        if (!saved) {
-          const resp = await axios.post("/api/locations", {
-            name: locationForm.name,
-            description: locationForm.description || null,
-            latitude: String(lat),
-            longitude: String(lng),
-            locationType: locationForm.locationType,
-            radius: locationForm.radius ?? null,
-          });
-          if (!resp?.data?.ok) {
-            throw new Error(resp?.data?.error || "REST save failed");
-          }
-        }
-
-        await locationsQuery.refetch?.();
-        resetLocationUI();
-      }
-    } catch (error: any) {
-      console.error("Error saving location:", error);
-      alert("تعذر حفظ الموقع:\n" + (error?.message || "خطأ غير متوقع"));
-    }
-  };
-
-  const handleAddPersonnel = async () => {
-    if (!selectedLocation) return;
-    try {
-      if (EPHEMERAL_ASSIGNMENTS) {
-        const entry = {
-          id: Date.now(),
-          name: personnelForm.name,
-          role: (personnelForm.role as any) || "رجل أمن ثاني",
-          phone: personnelForm.phone || undefined,
-          email: personnelForm.email || undefined,
-          personnelType: personnelForm.personnelType,
-          notes: personnelForm.notes || undefined,
-        };
-        setSessionPersonnel((prev) => {
-          const arr = [...(prev[selectedLocation.id] || []), entry];
-          const next = { ...prev, [selectedLocation.id]: arr };
-          sessionStorage.setItem("assignments", JSON.stringify(next));
-          return next;
-        });
-        setShowAddPersonnel(false);
-        setPersonnelForm({
-          name: "",
-          role: "",
-          phone: "",
-          email: "",
-          personnelType: "security",
-          notes: null,
-        });
-        return;
-      }
-
-      const data = {
-        name: personnelForm.name,
-        role: personnelForm.role,
-        phone: personnelForm.phone || undefined,
-        email: personnelForm.email || undefined,
-        personnelType: personnelForm.personnelType,
-        notes: personnelForm.notes || undefined,
-      };
-
-      if (editingPersonnel) {
-        await updatePersonnelMutation.mutateAsync({ id: editingPersonnel.id, ...data });
-      } else {
-        await createPersonnelMutation.mutateAsync({
-          locationId: selectedLocation.id,
-          ...data,
-        });
-      }
-    } catch (error) {
-      console.error("Error saving personnel:", error);
-      alert("تعذر حفظ بيانات الفرد");
-    }
-  };
-
-  const handleShare = async (platform: string) => {
-    try {
-      const raw = sessionStorage.getItem("assignments");
-      const assignments = raw ? JSON.parse(raw) : {};
-      const locations = (locationsQuery.data || []).map((l: any) => ({
-        id: l.id,
-        name: l.name,
-        latitude: l.latitude,
-        longitude: l.longitude,
-        locationType: l.locationType,
-        radius: l.radius ?? null,
-      }));
-      const resp = await axios.post("/api/snapshots", { assignments, locations });
-      const shareUrl = resp.data.url as string;
-
-      const text = selectedLocation ? `موقع: ${selectedLocation.name}` : "خريطة المواقع";
-      if (platform === "whatsapp") {
-        window.open(`https://wa.me/?text=${encodeURIComponent(text + " " + shareUrl)}`);
-      } else if (platform === "email") {
-        window.open(`mailto:?subject=${encodeURIComponent(text)}&body=${encodeURIComponent(shareUrl)}`);
-      } else if (platform === "copy") {
-        await navigator.clipboard.writeText(shareUrl);
-        alert("تم نسخ رابط العرض!");
-      }
-      setShowShareMenu(false);
-      setSessionPersonnel({});
-      sessionStorage.removeItem("assignments");
-    } catch (e) {
-      console.error("Error sharing snapshot:", e);
-      alert("تعذر إنشاء رابط المشاركة الآن.");
-    }
-  };
-
-  const handleStartSelectingLocation = () => {
-    setEditingLocation(null);
-    setLocationForm({
-      name: "",
-      description: "",
-      latitude: String(DIRIYAH_CENTER_LNG_LAT[1]),
-      longitude: String(DIRIYAH_CENTER_LNG_LAT[0]),
-      locationType: "mixed",
-      radius: 50,
+    if (!loc) return;
+    const s = parseStyleNotes(loc.notes);
+    setEdit({
+      name: loc.name ?? "",
+      description: loc.description ?? "",
+      type: (loc.locationType as any) ?? "mixed",
+      radius: Number(loc.radius ?? 30),
+      fill: s.fill ?? "#f59e0b",
+      fillOpacity: s.fillOpacity ?? 0.25,
+      stroke: s.stroke ?? "#b45309",
+      strokeWidth: s.strokeWidth ?? 2,
     });
-    setIsSelectingLocation(true);
-    setShowAddLocation(true);
+  }, [loc?.id]); // عند تغيير الموقع المحدد
 
-    // ركّز الخريطة على الدرعية عند البدء
-    mapRef.current?.easeTo({ center: DIRIYAH_CENTER_LNG_LAT, zoom: DIRIYAH_ZOOM });
-  };
+  async function saveChanges() {
+    if (!selectedId) return;
+    await updateM.mutateAsync({
+      id: selectedId,
+      name: edit.name,
+      description: edit.description,
+      locationType: edit.type,
+      radius: edit.radius,
+      // نخزن الستايل في notes كـ JSON
+      notes: stringifyStyleNotes({
+        fill: edit.fill,
+        fillOpacity: edit.fillOpacity,
+        stroke: edit.stroke,
+        strokeWidth: edit.strokeWidth,
+      }),
+    });
+    await Promise.all([getQ.refetch(), listQ.refetch()]);
+  }
 
-  const handleCancelSelection = () => {
-    setIsSelectingLocation(false);
-    if (tempMarkerRef.current) {
-      tempMarkerRef.current.remove();
-      tempMarkerRef.current = null;
-    }
-    setShowAddLocation(false);
-  };
+  async function deleteLocation() {
+    if (!selectedId) return;
+    if (!confirm("حذف هذا الموقع؟")) return;
+    await deleteM.mutateAsync({ id: selectedId });
+    setEditorOpen(false);
+    setSelectedId(null);
+    await listQ.refetch();
+  }
+
+  // Personnel handlers
+  async function addPerson(name: string, role?: string) {
+    if (!selectedId) return;
+    await pplCreateM.mutateAsync({ locationId: selectedId, name, role: role ?? "" });
+    await pplListQ.refetch();
+  }
+  async function removePerson(id: string) {
+    await pplDeleteM.mutateAsync({ id });
+    await pplListQ.refetch();
+  }
 
   return (
-    <div className="flex h-screen bg-gray-50">
-      <style>{`
-        .diriyah-header { background: linear-gradient(135deg, #a85a4a 0%, #d4a5a0 100%); }
-        .control-card { z-index: 999; pointer-events: auto; }
-        .maplibregl-canvas { z-index: 1; }
-      `}</style>
+    <div className="w-full h-full relative">
+      <div id="map" className="absolute inset-0" />
 
-      {/* Map Container */}
-      <div className="flex-1 relative">
-        <div ref={mapContainer} className="w-full h-full" />
-
-        {/* Top Right Control Card */}
-        <div className="absolute top-4 right-4 control-card">
-          <Card className="w-72 shadow-lg border-amber-200">
-            <CardHeader className="pb-3 diriyah-header text-white rounded-t-lg sticky top-0 z-10">
-              <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <MapPin className="w-5 h-5" />
-                  إدارة المواقع
-                </CardTitle>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => navigate("/home")}
-                  className="text-white hover:bg-white hover:bg-opacity-20"
-                  title="العودة إلى الصفحة الرئيسية"
-                >
-                  <Home className="w-4 h-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-3">
-              <Button
-                onClick={handleStartSelectingLocation}
-                className="w-full gap-2 bg-amber-600 hover:bg-amber-700"
-              >
-                <Plus className="w-4 h-4" />
-                إضافة موقع جديد
-              </Button>
-
-              <Button
-                onClick={handleShowUserLocation}
-                className="w-full gap-2 bg-green-600 hover:bg-green-700"
-              >
-                <Loader className="w-4 h-4" />
-                موقعي الحالي
-              </Button>
-
-              {isSelectingLocation && (
-                <div className="border-t pt-3 space-y-3">
-                  <div className="bg-blue-50 p-3 rounded-lg text-sm text-blue-800">
-                    اضغط على الخريطة لاختيار الموقع (داخل نطاق الدرعية)
-                  </div>
-
-                  <div className="space-y-3 border-t pt-3">
-                    <div>
-                      <Label>اسم الموقع</Label>
-                      <Input
-                        value={locationForm.name}
-                        onChange={(e) =>
-                          setLocationForm({ ...locationForm, name: e.target.value })
-                        }
-                        placeholder="مثال: نقطة تفتيش الدرعية"
-                      />
-                    </div>
-                    <div>
-                      <Label>الوصف</Label>
-                      <Textarea
-                        value={locationForm.description}
-                        onChange={(e) =>
-                          setLocationForm({
-                            ...locationForm,
-                            description: e.target.value,
-                          })
-                        }
-                        placeholder="وصف الموقع"
-                        className="h-20"
-                      />
-                    </div>
-
-                    {/* الإحداثيات → للعرض فقط وتُملأ من الخريطة */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label>Lat (خط العرض)</Label>
-                        <Input value={locationForm.latitude} readOnly placeholder="اختر من الخريطة" />
-                      </div>
-                      <div>
-                        <Label>Lng (خط الطول)</Label>
-                        <Input value={locationForm.longitude} readOnly placeholder="اختر من الخريطة" />
-                      </div>
-                    </div>
-
-                    <div>
-                      <Label>نوع الموقع</Label>
-                      <Select
-                        value={locationForm.locationType}
-                        onValueChange={(value: any) =>
-                          setLocationForm({ ...locationForm, locationType: value })
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="security">أمن</SelectItem>
-                          <SelectItem value="traffic">مروري</SelectItem>
-                          <SelectItem value="mixed">مختلط</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label>نطاق التمركز (متر)</Label>
-                      <Input
-                        type="number"
-                        value={locationForm.radius}
-                        onChange={(e) =>
-                          setLocationForm({
-                            ...locationForm,
-                            radius: parseInt(e.target.value || "0", 10),
-                          })
-                        }
-                        placeholder="100"
-                      />
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={handleAddLocation}
-                        className="flex-1 bg-amber-600 hover:bg-amber-700"
-                        disabled={
-                          createLocationMutation.isPending ||
-                          updateLocationMutation.isPending
-                        }
-                      >
-                        حفظ
-                      </Button>
-                      <Button
-                        onClick={handleCancelSelection}
-                        variant="outline"
-                        className="flex-1"
-                      >
-                        إلغاء
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {selectedLocation && !isSelectingLocation && (
-                <>
-                  <div className="border-t pt-3">
-                    <h3 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
-                      <Info className="w-4 h-4" />
-                      الموقع المختار
-                    </h3>
-                    <p className="text-sm text-gray-700 mb-3">{selectedLocation.name}</p>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setEditingLocation(selectedLocation);
-                          setLocationForm({
-                            name: selectedLocation.name,
-                            description: selectedLocation.description || "",
-                            latitude: selectedLocation.latitude,
-                            longitude: selectedLocation.longitude,
-                            locationType: selectedLocation.locationType,
-                            radius: selectedLocation.radius || 100,
-                          });
-                          setIsSelectingLocation(true);
-                        }}
-                        className="flex-1 gap-1 text-amber-700 hover:bg-amber-50"
-                      >
-                        <Edit2 className="w-3 h-3" />
-                        تعديل
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() =>
-                          deleteLocationMutation.mutate({ id: selectedLocation.id })
-                        }
-                        className="flex-1 gap-1"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                        حذف
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="border-t pt-3 space-y-2">
-                    <Button
-                      onClick={() => {
-                        setEditingPersonnel(null);
-                        setPersonnelForm({
-                          name: "",
-                          role: "",
-                          phone: "",
-                          email: "",
-                          personnelType: "security",
-                          notes: null,
-                        });
-                        setShowAddPersonnel(true);
-                      }}
-                      className="w-full gap-2 bg-blue-600 hover:bg-blue-700"
-                    >
-                      <Users className="w-4 h-4" />
-                      إضافة فرد أمني
-                    </Button>
-
-                    <div className="relative">
-                      <Button
-                        onClick={() => setShowShareMenu(!showShareMenu)}
-                        className="w-full gap-2 bg-purple-600 hover:bg-purple-700"
-                      >
-                        <Share2 className="w-4 h-4" />
-                        مشاركة
-                      </Button>
-                      {showShareMenu && (
-                        <div className="absolute bottom-12 left-0 right-0 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
-                          <button
-                            onClick={() => handleShare("whatsapp")}
-                            className="w-full px-4 py-2 text-left hover:bg-gray-100 text-sm"
-                          >
-                            📱 واتساب
-                          </button>
-                          <button
-                            onClick={() => handleShare("email")}
-                            className="w-full px-4 py-2 text-left hover:bg-gray-100 text-sm border-t"
-                          >
-                            📧 بريد إلكتروني
-                          </button>
-                          <button
-                            onClick={() => handleShare("copy")}
-                            className="w-full px-4 py-2 text-left hover:bg-gray-100 text-sm border-t"
-                          >
-                            📋 نسخ الرابط
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    {isZoomedIn && (
-                      <Button onClick={handleZoomOut} variant="outline" className="w-full">
-                        العودة للعرض العام
-                      </Button>
-                    )}
-                  </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-
-      {/* Add Personnel Modal */}
-      {showAddPersonnel && selectedLocation && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-[9999] flex items-center justify-center pointer-events-auto">
-          <Card className="w-full max-w-md mx-4">
-            <CardHeader className="pb-3 diriyah-header text-white rounded-t-lg flex items-center justify-between">
-              <CardTitle>
-                {editingPersonnel ? "تعديل الفرد" : "إضافة فرد جديد"}
-              </CardTitle>
-              <button
-                onClick={() => setShowAddPersonnel(false)}
-                className="text-white hover:opacity-80"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-4">
-              <div>
-                <Label>الاسم</Label>
-                <Input
-                  value={personnelForm.name}
-                  onChange={(e) =>
-                    setPersonnelForm({ ...personnelForm, name: e.target.value })
-                  }
-                  placeholder="اسم الفرد"
-                />
-              </div>
-              <div>
-                <Label>الدور</Label>
-                <Select
-                  value={personnelForm.role as any}
-                  onValueChange={(v: any) => setPersonnelForm({ ...personnelForm, role: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="اختر الدور" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="قائد فريق">قائد فريق</SelectItem>
-                    <SelectItem value="رجل أمن ثاني">رجل أمن ثاني</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>رقم الهاتف</Label>
-                <Input
-                  value={personnelForm.phone}
-                  onChange={(e) =>
-                    setPersonnelForm({ ...personnelForm, phone: e.target.value })
-                  }
-                  placeholder="0501234567"
-                />
-              </div>
-              <div>
-                <Label>البريد الإلكتروني</Label>
-                <Input
-                  type="email"
-                  value={personnelForm.email}
-                  onChange={(e) =>
-                    setPersonnelForm({ ...personnelForm, email: e.target.value })
-                  }
-                  placeholder="email@example.com"
-                />
-              </div>
-              <div>
-                <Label>النوع</Label>
-                <Select
-                  value={personnelForm.personnelType}
-                  onValueChange={(value: any) =>
-                    setPersonnelForm({ ...personnelForm, personnelType: value })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="security">أمن</SelectItem>
-                    <SelectItem value="traffic">مروري</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>ملاحظات</Label>
-                <Textarea
-                  value={personnelForm.notes || ""}
-                  onChange={(e) =>
-                    setPersonnelForm({ ...personnelForm, notes: e.target.value || null })
-                  }
-                  placeholder="ملاحظات إضافية"
-                  className="h-20"
-                />
-              </div>
+      {/* محرر جانبي */}
+      {editorOpen && loc && (
+        <div className="absolute top-4 right-4 w-[360px] max-h-[92vh] overflow-auto z-20">
+          <Card className="shadow-2xl">
+            <CardHeader className="flex justify-between items-center">
+              <CardTitle className="text-base">تعديل الموقع</CardTitle>
               <div className="flex gap-2">
-                <Button
-                  onClick={handleAddPersonnel}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700"
-                  disabled={
-                    createPersonnelMutation.isPending || updatePersonnelMutation.isPending
-                  }
-                >
-                  {editingPersonnel ? "تحديث" : "إضافة"}
+                <Button size="icon" variant="secondary" onClick={() => setEditorOpen(false)}>
+                  <X size={16} />
                 </Button>
-                <Button
-                  onClick={() => setShowAddPersonnel(false)}
-                  variant="outline"
-                  className="flex-1"
-                >
-                  إلغاء
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+
+              {/* التفاصيل */}
+              <div className="space-y-3">
+                <FieldRow label="اسم الموقع">
+                  <Input value={edit.name} onChange={(e) => setEdit((s) => ({ ...s, name: e.target.value }))} />
+                </FieldRow>
+                <FieldRow label="الوصف">
+                  <Textarea rows={3} value={edit.description} onChange={(e) => setEdit((s) => ({ ...s, description: e.target.value }))} />
+                </FieldRow>
+                <FieldRow label="نوع الموقع">
+                  <Select value={edit.type} onValueChange={(v: any) => setEdit((s) => ({ ...s, type: v }))}>
+                    <SelectTrigger><SelectValue placeholder="نوع" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mixed">مختلط</SelectItem>
+                      <SelectItem value="security">أمني</SelectItem>
+                      <SelectItem value="traffic">مروري</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </FieldRow>
+                <FieldRow label={`نطاق التمركز (متر): ${edit.radius}`}>
+                  <Slider value={[edit.radius]} min={5} max={500} step={5} onValueChange={(v) => setEdit((s) => ({ ...s, radius: v[0] }))} />
+                </FieldRow>
+              </div>
+
+              <hr className="my-2" />
+
+              {/* النمط */}
+              <div className="space-y-3">
+                <div className="font-semibold text-sm">نمط الدائرة</div>
+                <FieldRow label="لون التعبئة">
+                  <input type="color" value={edit.fill} onChange={(e) => setEdit((s) => ({ ...s, fill: e.target.value }))} />
+                </FieldRow>
+                <FieldRow label={`شفافية التعبئة: ${edit.fillOpacity}`}>
+                  <Slider value={[edit.fillOpacity]} min={0} max={1} step={0.05} onValueChange={(v) => setEdit((s) => ({ ...s, fillOpacity: v[0] }))} />
+                </FieldRow>
+                <FieldRow label="لون الحدود">
+                  <input type="color" value={edit.stroke} onChange={(e) => setEdit((s) => ({ ...s, stroke: e.target.value }))} />
+                </FieldRow>
+                <FieldRow label={`عرض الحدود (px): ${edit.strokeWidth}`}>
+                  <Slider value={[edit.strokeWidth]} min={0} max={10} step={1} onValueChange={(v) => setEdit((s) => ({ ...s, strokeWidth: v[0] }))} />
+                </FieldRow>
+              </div>
+
+              <hr className="my-2" />
+
+              {/* الأفراد */}
+              <div className="space-y-2">
+                <div className="font-semibold text-sm">أفراد الأمن</div>
+                <div className="space-y-2">
+                  {(pplListQ.data ?? []).map((p) => (
+                    <div key={p.id} className="flex items-center justify-between border rounded p-2 text-sm">
+                      <div>
+                        <div className="font-medium">{p.name}</div>
+                        {!!p.role && <div className="opacity-70">{p.role}</div>}
+                      </div>
+                      <Button size="icon" variant="destructive" onClick={() => removePerson(p.id)}>
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  ))}
+                  <AddPersonRow onAdd={addPerson} />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <Button onClick={saveChanges} className="flex-1">
+                  <Save size={16} className="mr-2" /> حفظ التعديلات
+                </Button>
+                <Button variant="destructive" onClick={deleteLocation}>
+                  <Trash2 size={16} className="mr-2" /> حذف
                 </Button>
               </div>
             </CardContent>
           </Card>
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Personnel Details Modal */}
-      {selectedLocation && showPersonnelDetails && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-[9999] flex items-center justify-center pointer-events-auto">
-          <Card className="w-full max-w-md mx-4 max-h-96 overflow-y-auto">
-            <CardHeader className="pb-3 diriyah-header text-white rounded-t-lg sticky top-0 z-10 flex items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <Users className="w-5 h-5" />
-                {selectedLocation.name}
-              </CardTitle>
-              <button
-                onClick={() => setShowPersonnelDetails(false)}
-                className="text-white hover:opacity-80"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </CardHeader>
-            <CardContent className="pt-4">
-              {(EPHEMERAL_ASSIGNMENTS
-                ? (sessionPersonnel[selectedLocation.id]?.length ?? 0) > 0
-                : !!locationDetailsQuery.data?.personnel?.length) ? (
-                <div className="space-y-3">
-                  {(EPHEMERAL_ASSIGNMENTS
-                    ? sessionPersonnel[selectedLocation.id] || []
-                    : locationDetailsQuery.data!.personnel
-                  ).map((person: any) => (
-                    <Card key={person.id} className="border-amber-200">
-                      <CardContent className="p-3">
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="flex-1">
-                            <h4 className="font-semibold text-amber-900">{person.name}</h4>
-                            <p className="text-sm text-gray-600">{person.role}</p>
-                          </div>
-                          <span
-                            className={`text-xs px-2 py-1 rounded-full ${
-                              person.personnelType === "security"
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-blue-100 text-blue-800"
-                            }`}
-                          >
-                            {person.personnelType === "security" ? "أمن" : "مروري"}
-                          </span>
-                        </div>
-                        {person.phone && (
-                          <p className="text-sm text-gray-600">📱 {person.phone}</p>
-                        )}
-                        {person.email && (
-                          <p className="text-sm text-gray-600">📧 {person.email}</p>
-                        )}
-                        {person.notes && (
-                          <p className="text-sm text-gray-600 mt-2 p-2 bg-gray-50 rounded">
-                            📝 {person.notes}
-                          </p>
-                        )}
-                        <div className="flex gap-2 mt-3">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              setEditingPersonnel(person);
-                              const pType = person.personnelType as "security" | "traffic";
-                              setPersonnelForm({
-                                name: person.name,
-                                role: person.role,
-                                phone: person.phone || "",
-                                email: person.email || "",
-                                personnelType: pType,
-                                notes: person.notes,
-                              });
-                              setShowAddPersonnel(true);
-                            }}
-                            className="flex-1 gap-1 text-amber-700 hover:bg-amber-50"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                            تعديل
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => {
-                              if (EPHEMERAL_ASSIGNMENTS) {
-                                setSessionPersonnel((prev) => {
-                                  const arr = (prev[selectedLocation.id] || []).filter(
-                                    (p: any) => p.id !== person.id
-                                  );
-                                  const next = { ...prev, [selectedLocation.id]: arr };
-                                  sessionStorage.setItem("assignments", JSON.stringify(next));
-                                  return next;
-                                });
-                              } else {
-                                deletePersonnelMutation.mutate({ id: person.id });
-                              }
-                            }}
-                            className="flex-1 gap-1"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                            حذف
-                          </Button>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-center text-gray-500 py-4">
-                  لا توجد أفراد متمركزون في هذا الموقع
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
+function AddPersonRow({ onAdd }: { onAdd: (name: string, role?: string) => void }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  return (
+    <div className="flex gap-2">
+      <Input placeholder="اسم الفرد" value={name} onChange={(e) => setName(e.target.value)} />
+      <Input placeholder="الوظيفة/الدور" value={role} onChange={(e) => setRole(e.target.value)} />
+      <Button onClick={() => { if (name.trim()) { onAdd(name.trim(), role.trim() || undefined); setName(""); setRole(""); }}}>
+        <Plus size={16} className="mr-1" /> إضافة
+      </Button>
     </div>
   );
 }
