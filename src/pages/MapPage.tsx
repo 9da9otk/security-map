@@ -30,6 +30,7 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
 export default function MapPage() {
   const mapRef = useRef<Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
+  const mapLoadedRef = useRef(false);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -42,7 +43,6 @@ export default function MapPage() {
   );
   const updateM = trpc.locations.update.useMutation();
   const deleteM = trpc.locations.delete.useMutation();
-
   const pplListQ = trpc.personnel.listByLocation.useQuery(
     { locationId: (selectedId ?? 0) as number },
     { enabled: selectedId != null }
@@ -50,7 +50,46 @@ export default function MapPage() {
   const pplCreateM = trpc.personnel.create.useMutation();
   const pplDeleteM = trpc.personnel.delete.useMutation();
 
-  // init map
+  // Build GeoJSON from API data
+  const geojson = useMemo(() => {
+    if (!listQ.data) return { type: "FeatureCollection", features: [] } as turf.FeatureCollection;
+    const features = listQ.data.map((loc: any) => {
+      const lat = Number(loc.latitude), lng = Number(loc.longitude);
+      const radius = Number(loc.radius || 30);
+      const s = parseStyle(loc.notes);
+      const poly = circlePolygonFor(lng, lat, radius);
+      return {
+        type: "Feature",
+        geometry: poly.geometry,
+        properties: {
+          id: Number(loc.id),
+          name: loc.name,
+          type: loc.locationType,
+          radius,
+          fill: s.fill ?? "#f59e0b",
+          fillOpacity: s.fillOpacity ?? 0.25,
+          stroke: s.stroke ?? "#b45309",
+          strokeWidth: s.strokeWidth ?? 2,
+          lat, lng,
+        },
+      } as turf.Feature;
+    });
+    return { type: "FeatureCollection", features } as turf.FeatureCollection;
+  }, [listQ.data]);
+
+  // Keep latest geojson in a ref for late map load
+  const geojsonRef = useRef<any>(geojson);
+  useEffect(() => { geojsonRef.current = geojson; }, [geojson]);
+
+  // Helper: safely set source data
+  function setSourceDataSafe() {
+    const map = mapRef.current;
+    if (!map) return;
+    const src = map.getSource("locations-src") as maplibregl.GeoJSONSource | undefined;
+    if (src) src.setData(geojsonRef.current as any);
+  }
+
+  // Init map
   useEffect(() => {
     if (mapRef.current) return;
 
@@ -65,18 +104,46 @@ export default function MapPage() {
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
     map.on("load", () => {
+      mapLoadedRef.current = true;
+
       map.addSource("locations-src", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
         promoteId: "id",
       });
 
-      map.addLayer({ id: "loc-fill", type: "fill", source: "locations-src",
-        paint: { "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"], "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25] } });
-      map.addLayer({ id: "loc-outline", type: "line", source: "locations-src",
-        paint: { "line-color": ["coalesce", ["get", "stroke"], "#b45309"], "line-width": ["coalesce", ["get", "strokeWidth"], 2] } });
-      map.addLayer({ id: "loc-center", type: "circle", source: "locations-src",
-        paint: { "circle-radius": 4, "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"] } });
+      map.addLayer({
+        id: "loc-fill",
+        type: "fill",
+        source: "locations-src",
+        paint: {
+          "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"],
+          "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25],
+        },
+      });
+
+      map.addLayer({
+        id: "loc-outline",
+        type: "line",
+        source: "locations-src",
+        paint: {
+          "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
+          "line-width": ["coalesce", ["get", "strokeWidth"], 2],
+        },
+      });
+
+      map.addLayer({
+        id: "loc-center",
+        type: "circle",
+        source: "locations-src",
+        paint: {
+          "circle-radius": 4,
+          "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"],
+        },
+      });
+
+      // ← مهم: حمّل البيانات الحالية مباشرة بعد load
+      setSourceDataSafe();
 
       map.on("mouseenter", "loc-fill", () => { map.getCanvas().style.cursor = "pointer"; });
       map.on("mouseleave", "loc-fill", () => { map.getCanvas().style.cursor = ""; hideHoverPopup(); });
@@ -91,40 +158,21 @@ export default function MapPage() {
       });
     });
 
-    return () => { map.remove(); mapRef.current = null; };
+    return () => { map.remove(); mapRef.current = null; mapLoadedRef.current = false; };
   }, []);
 
-  // build geojson
-  const geojson = useMemo(() => {
-    if (!listQ.data) return { type: "FeatureCollection", features: [] } as turf.FeatureCollection;
-    const features = listQ.data.map((loc: any) => {
-      const lat = Number(loc.latitude), lng = Number(loc.longitude);
-      const radius = Number(loc.radius || 30);
-      const s = parseStyle(loc.notes);
-      const poly = circlePolygonFor(lng, lat, radius);
-      return {
-        type: "Feature",
-        geometry: poly.geometry,
-        properties: {
-          id: Number(loc.id),
-          name: loc.name, type: loc.locationType, radius,
-          fill: s.fill ?? "#f59e0b", fillOpacity: s.fillOpacity ?? 0.25,
-          stroke: s.stroke ?? "#b45309", strokeWidth: s.strokeWidth ?? 2,
-          lat, lng,
-        },
-      } as turf.Feature;
-    });
-    return { type: "FeatureCollection", features } as turf.FeatureCollection;
-  }, [listQ.data]);
-
+  // Update source whenever geojson changes (robust to load timing)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
-    const src = map.getSource("locations-src") as maplibregl.GeoJSONSource | undefined;
-    if (src) src.setData(geojson as any);
+    if (!map) return;
+    if (mapLoadedRef.current) {
+      setSourceDataSafe();
+    } else {
+      map.once("load", setSourceDataSafe);
+    }
   }, [geojson]);
 
-  // hover popup
+  // Hover popup
   function showHoverPopup(e: MapLayerMouseEvent) {
     const map = mapRef.current!;
     const f = e.features?.[0]; if (!f) return;
@@ -141,7 +189,7 @@ export default function MapPage() {
   }
   function hideHoverPopup() { popupRef.current?.remove(); }
 
-  // editor state
+  // Editor state
   const loc = getQ.data as any;
   const s = parseStyle(loc?.notes);
   const [edit, setEdit] = useState({
@@ -166,7 +214,6 @@ export default function MapPage() {
     if (selectedId == null) return;
     const notes = styleJSON({ fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke, strokeWidth: edit.strokeWidth });
 
-    // 1) tRPC أولًا
     try {
       await updateM.mutateAsync({
         id: selectedId,
@@ -178,18 +225,11 @@ export default function MapPage() {
       });
     } catch (e) {
       console.warn("[tRPC update failed] falling back to REST", e);
-      // 2) REST fallback
       await fetch(`/api/locations/${selectedId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          name: edit.name,
-          description: edit.description,
-          locationType: edit.type,
-          radius: edit.radius,
-          notes,
-        }),
+        body: JSON.stringify({ name: edit.name, description: edit.description, locationType: edit.type, radius: edit.radius, notes }),
       });
     }
 
@@ -234,8 +274,27 @@ export default function MapPage() {
 
   return (
     <div className="w-full h-full relative">
+      {/* خريطة */}
       <div id="map" className="absolute inset-0" />
 
+      {/* لوحة مواقع جانبية مبسّطة لفتح المحرر يدويًا */}
+      <div className="absolute left-4 top-4 w-[260px] max-h-[80vh] overflow-auto z-20">
+        <Card className="shadow-xl">
+          <CardHeader><CardTitle className="text-sm">المواقع</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {(listQ.data ?? []).map((it: any) => (
+              <div key={it.id} className="flex items-center justify-between text-sm border rounded px-2 py-1">
+                <div className="truncate">{it.name ?? `#${it.id}`}</div>
+                <Button size="sm" variant="secondary" onClick={() => { setSelectedId(Number(it.id)); setEditorOpen(true); }}>
+                  تعديل
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* محرر جانبي */}
       {editorOpen && loc && (
         <div className="absolute top-4 right-4 w-[360px] max-h-[92vh] overflow-auto z-20">
           <Card className="shadow-2xl">
