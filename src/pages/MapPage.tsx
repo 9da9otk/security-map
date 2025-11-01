@@ -1,4 +1,3 @@
-// src/pages/MapPage.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { Map, LngLatLike, MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -17,6 +16,12 @@ import { Trash2, Save, X } from "lucide-react";
 const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
 const DIRIYYAH_ZOOM = 13;
 
+const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
+const STYLE_MAPTILER = MAPTILER_KEY
+  ? `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`
+  : null;
+const STYLE_FALLBACK = "https://demotiles.maplibre.org/style.json";
+
 type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number };
 const parseStyle = (s?: string | null): StyleJSON => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 const styleJSON = (o: StyleJSON) => JSON.stringify(o ?? {});
@@ -30,21 +35,21 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
 export default function MapPage() {
   const mapRef = useRef<Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
-  const mapLoadedRef = useRef(false);
+  const loadedRef = useRef(false);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
 
-  // ===== API
+  // === API
   const listQ = trpc.locations.list.useQuery();
-  const getQ = trpc.locations.getById.useQuery(
+  const getQ  = trpc.locations.getById.useQuery(
     { id: (selectedId ?? 0) as number },
     { enabled: selectedId != null, refetchOnWindowFocus: false }
   );
   const updateM = trpc.locations.update.useMutation();
   const deleteM = trpc.locations.delete.useMutation();
 
-  // ===== GeoJSON
+  // === GeoJSON (من قاعدة البيانات)
   const geojson = useMemo(() => {
     const fc: turf.FeatureCollection = { type: "FeatureCollection", features: [] };
     if (!listQ.data) return fc;
@@ -76,20 +81,21 @@ export default function MapPage() {
   const geojsonRef = useRef<any>(geojson);
   useEffect(() => { geojsonRef.current = geojson; }, [geojson]);
 
-  function setSourceDataSafe() {
+  const setSourceDataSafe = () => {
     const map = mapRef.current;
-    if (!map) return;
-    const src = map.getSource("locations-src") as maplibregl.GeoJSONSource | undefined;
+    const src = map?.getSource("locations-src") as maplibregl.GeoJSONSource | undefined;
     if (src) src.setData(geojsonRef.current as any);
-  }
+  };
 
-  // ===== Init map
+  // === Init Map + fallback
   useEffect(() => {
     if (mapRef.current) return;
 
+    const initialStyle = STYLE_MAPTILER ?? STYLE_FALLBACK;
+
     const map = new maplibregl.Map({
       container: "map",
-      style: `https://api.maptiler.com/maps/streets/style.json?key=${import.meta.env.VITE_MAPTILER_KEY}`,
+      style: initialStyle,
       center: DIRIYYAH_CENTER as LngLatLike,
       zoom: DIRIYYAH_ZOOM,
       attributionControl: false,
@@ -98,85 +104,90 @@ export default function MapPage() {
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
+    // resize في أول frame لتفادي الخلفية البيضاء
+    requestAnimationFrame(() => map.resize());
+
+    // لو فشل تحميل الستايل (401/403/404...) بدّل للـ fallback
+    const onMapError = (e: any) => {
+      const alreadyFallback = (map as any)._usesFallbackStyle === true;
+      if (!alreadyFallback) {
+        console.warn("[map] style error -> switching to fallback", e?.error || e);
+        map.setStyle(STYLE_FALLBACK);
+        (map as any)._usesFallbackStyle = true;
+        map.once("styledata", () => {
+          if (!map.getSource("locations-src")) {
+            map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
+            map.addLayer({ id: "loc-fill", type: "fill", source: "locations-src",
+              paint: { "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"], "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25] }});
+            map.addLayer({ id: "loc-outline", type: "line", source: "locations-src",
+              paint: { "line-color": ["coalesce", ["get", "stroke"], "#b45309"], "line-width": ["coalesce", ["get", "strokeWidth"], 2] }});
+            map.addLayer({ id: "loc-center", type: "circle", source: "locations-src",
+              paint: { "circle-radius": 4, "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"] }});
+          }
+          setSourceDataSafe();
+          setTimeout(() => map.resize(), 0);
+        });
+      }
+    };
+
+    map.on("error", onMapError);
+
     map.on("load", () => {
-      mapLoadedRef.current = true;
+      loadedRef.current = true;
 
-      map.addSource("locations-src", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-        promoteId: "id",
-      });
+      if (!map.getSource("locations-src")) {
+        map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
 
-      map.addLayer({
-        id: "loc-fill",
-        type: "fill",
-        source: "locations-src",
-        paint: {
-          "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"],
-          "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25],
-        },
-      });
+        map.addLayer({
+          id: "loc-fill", type: "fill", source: "locations-src",
+          paint: { "fill-color": ["coalesce", ["get", "fill"], "#f59e0b"],
+                   "fill-opacity": ["coalesce", ["get", "fillOpacity"], 0.25] }
+        });
 
-      map.addLayer({
-        id: "loc-outline",
-        type: "line",
-        source: "locations-src",
-        paint: {
-          "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
-          "line-width": ["coalesce", ["get", "strokeWidth"], 2],
-        },
-      });
+        map.addLayer({
+          id: "loc-outline", type: "line", source: "locations-src",
+          paint: { "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
+                   "line-width": ["coalesce", ["get", "strokeWidth"], 2] }
+        });
 
-      map.addLayer({
-        id: "loc-center",
-        type: "circle",
-        source: "locations-src",
-        paint: {
-          "circle-radius": 4,
-          "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"],
-        },
-      });
+        map.addLayer({
+          id: "loc-center", type: "circle", source: "locations-src",
+          paint: { "circle-radius": 4, "circle-color": ["coalesce", ["get", "stroke"], "#7c2d12"] }
+        });
+      }
 
-      // ضخ البيانات وفرض إعادة قياس بعد التحميل
       setSourceDataSafe();
       setTimeout(() => map.resize(), 0);
     });
 
-    // أعِد القياس مع تغيّر حجم النافذة
     const onResize = () => map.resize();
     window.addEventListener("resize", onResize);
 
     return () => {
       window.removeEventListener("resize", onResize);
+      map.off("error", onMapError);
       map.remove();
       mapRef.current = null;
-      mapLoadedRef.current = false;
+      loadedRef.current = false;
     };
   }, []);
 
-  // لو تغيّر الـ GeoJSON حدّث المصدر حتى لو الـ style يتأخر
+  // تحديث المصدر عند تغيّر البيانات
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (mapLoadedRef.current) {
+    if (loadedRef.current) {
       setSourceDataSafe();
-      map.resize(); // في حال كان الحاوي تغيّر حجمه
+      map.resize();
     } else {
-      map.once("load", () => {
-        setSourceDataSafe();
-        map.resize();
-      });
+      map.once("load", () => { setSourceDataSafe(); map.resize(); });
     }
   }, [geojson]);
 
-  // أعِد القياس عند فتح/إغلاق المحرر (أحيانًا تغيّر العرض يخبّي البلاطات)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    setTimeout(() => map.resize(), 50);
-  }, [editorOpen]);
+  // أعد القياس عند فتح/إغلاق المحرر
+  useEffect(() => { setTimeout(() => mapRef.current?.resize(), 50); }, [editorOpen]);
 
-  // ===== Hover popup
+  // === Hover popup
   function showHoverPopup(e: MapLayerMouseEvent) {
     const map = mapRef.current!;
     const f = e.features?.[0]; if (!f) return;
@@ -191,15 +202,16 @@ export default function MapPage() {
     if (!popupRef.current) popupRef.current = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
     popupRef.current.setLngLat(e.lngLat).setHTML(html).addTo(map);
   }
-  function hideHoverPopup() { popupRef.current?.remove(); }
+  const hideHoverPopup = () => popupRef.current?.remove();
 
-  // إعداد أحداث التفاعل بعد تحميل الخريطة
+  // ربط أحداث التفاعل
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+
     const onEnter = () => { map.getCanvas().style.cursor = "pointer"; };
     const onLeave = () => { map.getCanvas().style.cursor = ""; hideHoverPopup(); };
-    const onMove = (e: any) => showHoverPopup(e);
+    const onMove  = (e: any) => showHoverPopup(e);
     const onClick = (e: any) => {
       const f = e.features?.[0];
       const raw = (f && (f.id as any)) ?? (f?.properties as any)?.id;
@@ -209,21 +221,17 @@ export default function MapPage() {
       setEditorOpen(true);
     };
 
-    if (mapLoadedRef.current) {
+    const attach = () => {
       map.on("mouseenter", "loc-fill", onEnter);
       map.on("mouseleave", "loc-fill", onLeave);
       map.on("mousemove", "loc-fill", onMove);
       map.on("click", "loc-fill", onClick);
-    } else {
-      map.once("load", () => {
-        map.on("mouseenter", "loc-fill", onEnter);
-        map.on("mouseleave", "loc-fill", onLeave);
-        map.on("mousemove", "loc-fill", onMove);
-        map.on("click", "loc-fill", onClick);
-      });
-    }
+    };
+
+    if (loadedRef.current) attach();
+    else map.once("load", attach);
+
     return () => {
-      if (!map) return;
       map.off("mouseenter", "loc-fill", onEnter);
       map.off("mouseleave", "loc-fill", onLeave);
       map.off("mousemove", "loc-fill", onMove);
@@ -231,7 +239,7 @@ export default function MapPage() {
     };
   }, []);
 
-  // ===== Editor state
+  // === حالة المحرر
   const loc = getQ.data as any;
   const s = parseStyle(loc?.notes);
   const [edit, setEdit] = useState({
@@ -278,7 +286,6 @@ export default function MapPage() {
       });
     }
     await Promise.all([getQ.refetch(), listQ.refetch()]);
-    // تأكد من إعادة رسم البلاطات بعد التعديل
     setTimeout(() => mapRef.current?.resize(), 0);
   }
 
@@ -297,18 +304,17 @@ export default function MapPage() {
   }
 
   return (
-    // غلاف بارتفاع الشاشة بالكامل
-    <div className="relative h-screen w-full">
-      {/* الخريطة — اجعلها أسفل كل شيء */}
-      <div id="map" className="absolute inset-0 z-0" />
+    <div className="maplibre-page">
+      {/* الخريطة */}
+      <div id="map" />
 
-      {/* قائمة المواقع (يسار) */}
-      <div className="absolute left-4 top-4 w-[260px] max-h-[80vh] overflow-auto z-20">
-        <Card className="shadow-xl">
+      {/* قائمة المواقع */}
+      <div className="map-panel absolute left-4 top-4 w-[260px] max-h-[80vh] overflow-auto rounded-lg shadow-xl p-0">
+        <Card className="shadow-none border-0">
           <CardHeader><CardTitle className="text-sm">المواقع</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             {(listQ.data ?? []).map((it: any) => (
-              <div key={it.id} className="flex items-center justify-between text-sm border rounded px-2 py-1 bg-white/90 backdrop-blur">
+              <div key={it.id} className="flex items-center justify-between text-sm border rounded px-2 py-1 bg-white">
                 <div className="truncate">{it.name ?? `#${it.id}`}</div>
                 <Button size="sm" variant="secondary" onClick={() => { setSelectedId(Number(it.id)); setEditorOpen(true); }}>
                   تعديل
@@ -319,10 +325,10 @@ export default function MapPage() {
         </Card>
       </div>
 
-      {/* المحرّر (يمين) */}
+      {/* محرر الموقع */}
       {editorOpen && loc && (
-        <div className="absolute top-4 right-4 w-[360px] max-h-[92vh] overflow-auto z-20">
-          <Card className="shadow-2xl bg-white/95 backdrop-blur">
+        <div className="map-panel absolute top-4 right-4 w-[360px] max-h-[92vh] overflow-auto rounded-lg shadow-2xl">
+          <Card className="shadow-none border-0">
             <CardHeader className="flex justify-between items-center">
               <CardTitle className="text-base">تعديل الموقع</CardTitle>
               <Button size="icon" variant="secondary" onClick={() => setEditorOpen(false)}>
