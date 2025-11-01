@@ -1,70 +1,22 @@
-:root {
-  --panel-w: 380px;
-  --panel-pad: 12px;
-}
-
-html, body, #root {
-  height: 100%;
-  margin: 0;
-}
-
-.maplibre-page {
-  position: relative;
-  height: 100%;
-  width: 100%;
-  overflow: hidden;
-  background: #fff;
-}
-
-#map {
-  position: absolute;
-  inset: 0;
-}
-
-/* إصلاحات للقياس الكامل */
-.maplibre-map, .mapboxgl-map {
-  height: 100% !important;
-  width: 100% !important;
-}
+:root{--panel-w:380px;--panel-pad:12px}
+html,body,#root{height:100%;margin:0}
+.maplibre-page{position:relative;height:100%;width:100%;overflow:hidden;background:#fff}
+#map{position:absolute;inset:0}
+.maplibre-map,.mapboxgl-map{height:100%!important;width:100%!important}
 
 /* لوح جانبي / محرر */
-.map-panel {
-  z-index: 10;
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #e5e7eb;
-  box-shadow: 0 10px 25px rgba(0,0,0,.08);
-  padding: var(--panel-pad);
-}
+.map-panel{z-index:10;background:#fff;border-radius:12px;border:1px solid #e5e7eb;box-shadow:0 10px 25px rgba(0,0,0,.08);padding:var(--panel-pad)}
+.list-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid #e5e7eb;border-radius:8px;background:#fff}
+.list-item + .list-item{margin-top:8px}
 
-/* لستة العناصر */
-.list-item {
-  display:flex; align-items:center; justify-content:space-between;
-  gap:8px; padding:8px 10px; border:1px solid #e5e7eb; border-radius:8px; background:#fff;
-}
-.list-item + .list-item { margin-top:8px; }
-
-/* أزرار بسيطة */
-.btn {
-  display:inline-flex; align-items:center; justify-content:center;
-  gap:8px; height:40px; padding:0 14px; border-radius:10px; border:1px solid #e5e7eb;
-  background:#0ea5e9; color:#fff; font-weight:600; cursor:pointer;
-}
-.btn.secondary { background:#f1f5f9; color:#0f172a; }
-.btn.red { background:#ef4444; color:#fff; }
+/* أزرار */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 12px;border-radius:10px;border:1px solid #e5e7eb;background:#0ea5e9;color:#fff;font-weight:600;cursor:pointer}
+.btn.secondary{background:#f1f5f9;color:#0f172a}
+.btn.red{background:#ef4444;color:#fff}
 
 /* فورم بسيط */
-.form-row { margin-bottom: 10px; }
-.form-row label { display:block; font-size:12px; color:#334155; margin-bottom:6px; }
-.form-row input[type="text"],
-.form-row textarea,
-.form-row select {
-  width: 100%;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 14px;
-  box-sizing: border-box;
-}
-.form-row input[type="color"] { width: 48px; height: 32px; padding: 0; border: none; background: none; }
-.range { width: 100%; }
+.form-row{margin-bottom:10px}
+.form-row label{display:block;font-size:12px;color:#334155;margin-bottom:6px}
+.form-row input[type="text"],.form-row textarea,.form-row select{width:100%;border:1px solid #d1d5db;border-radius:8px;padding:8px 10px;font-size:14px;box-sizing:border-box}
+.form-row input[type="color"]{width:48px;height:32px;padding:0;border:none;background:none}
+.range{width:100%}
