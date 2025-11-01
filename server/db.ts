@@ -29,45 +29,67 @@ function cleanDatabaseUrl(urlStr: string) {
 /** إن أردت تعطيل SSL تمامًا ضع APP_DB_SSL=off في المتغيرات */
 function buildSslOption() {
   if (process.env.APP_DB_SSL === 'off') return undefined;
-  // لو لديك CA مخصّص من مزود القاعدة استبدل السطر التالي بقراءة ca من ملف:
+  // إن كنت تحتاج CA مخصصًا، استبدل بالسطرين أدناه:
   // import fs from 'node:fs';
   // return { ca: fs.readFileSync('/path/to/ca.pem', 'utf8') };
   return { rejectUnauthorized: true, minVersion: 'TLSv1.2' } as const;
 }
 
-export async function getDb() {
-  if (_db) return _db;
-
+async function createPool(): Promise<Pool> {
   const ssl = buildSslOption();
 
   if (ENV.DATABASE_URL) {
     const uri = cleanDatabaseUrl(ENV.DATABASE_URL);
-    _pool = mysql.createPool({
+    return mysql.createPool({
       uri,
       waitForConnections: true,
       connectionLimit: 10,
       namedPlaceholders: true,
       ssl, // <-- كائن وليس boolean
-    });
-  } else {
-    _pool = mysql.createPool({
-      host: ENV.DB_HOST,
-      port: ENV.DB_PORT,
-      database: ENV.DB_NAME,
-      user: ENV.DB_USER,
-      password: ENV.DB_PASS,
-      waitForConnections: true,
-      connectionLimit: 10,
-      namedPlaceholders: true,
-      ssl, // <-- كائن وليس boolean
+      dateStrings: true,
+      charset: 'utf8mb4',
+      multipleStatements: false,
     });
   }
 
-  // إنشاء الجداول إن لم تكن موجودة
+  return mysql.createPool({
+    host: ENV.DB_HOST,
+    port: ENV.DB_PORT,
+    database: ENV.DB_NAME,
+    user: ENV.DB_USER,
+    password: ENV.DB_PASS,
+    waitForConnections: true,
+    connectionLimit: 10,
+    namedPlaceholders: true,
+    ssl, // <-- كائن وليس boolean
+    dateStrings: true,
+    charset: 'utf8mb4',
+    multipleStatements: false,
+  });
+}
+
+export async function getDb() {
+  if (_db) return _db;
+
+  _pool = await createPool();
+
+  // اختبار اتصال سريع + لوج
+  try {
+    const conn = await _pool.getConnection();
+    await conn.ping();
+    conn.release();
+    console.log('[DB] ping ok');
+  } catch (e: any) {
+    console.error('[DB] ping failed:', e?.message || e);
+    throw e;
+  }
+
+  // إنشاء/تعديل الجداول إن لم تكن موجودة
   await ensureSchema(_pool);
 
   // المهم: حدّد وضع Drizzle عند تمرير schema
   _db = drizzle(_pool, { schema, mode: 'default' });
+
   console.log(
     '[DB] pool ready (ssl:',
     process.env.APP_DB_SSL === 'off' ? 'disabled' : 'enabled',
@@ -80,14 +102,15 @@ export async function getDb() {
 // إعادة تصدير الجداول المستخدمة في بقية المشروع
 export { locations, personnelTable, users };
 
+// إتاحة الوصول للـ pool عند الحاجة (اختياري)
+export function getPool(): Pool | null {
+  return _pool;
+}
+
 // إغلاق أنيق للـ pool عند الإنهاء
-process.on('SIGTERM', async () => {
-  try {
-    await _pool?.end();
-  } catch {}
-});
-process.on('SIGINT', async () => {
-  try {
-    await _pool?.end();
-  } catch {}
-});
+async function closePool() {
+  try { await _pool?.end(); } catch {}
+}
+
+process.on('SIGTERM', closePool);
+process.on('SIGINT', closePool);
