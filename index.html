@@ -1,28 +1,65 @@
 <!doctype html>
-<html lang="en">
-
+<html lang="ar" dir="rtl">
   <head>
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <link rel="icon" type="image/png" href="%VITE_APP_LOGO%" />
-    <link rel="apple-touch-icon" href="%VITE_APP_LOGO%" />
-    <title>%VITE_APP_TITLE%</title>
-    <!-- Add Google Fonts here, example:
+      content="width=device-width, initial-scale=1.0, maximum-scale=1"
+    />
+
+    <!-- قيم افتراضية للأيقونة -->
+    <link rel="icon" type="image/png" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/favicon.ico" />
+
+    <!-- عنوان افتراضي -->
+    <title>Security Map</title>
+
+    <!-- (اختياري) خطوط جوجل
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
     -->
   </head>
 
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-    <script
-      defer
-      src="%VITE_ANALYTICS_ENDPOINT%/umami"
-      data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"></script>
-  </body>
 
+    <!-- تطبيقك -->
+    <script type="module" src="/src/main.tsx"></script>
+
+    <!-- تهيئة ديناميكية عبر Vite env: عنوان/أيقونة/تحليلات (Umami) -->
+    <script type="module">
+      // عيّن العنوان من Vite env إذا وُجد وإلا يبقى الافتراضي
+      const appTitle = import.meta.env.VITE_APP_TITLE;
+      if (appTitle) document.title = appTitle;
+
+      // عيّن الأيقونات من Vite env إذا وُجدت
+      const appLogo = import.meta.env.VITE_APP_LOGO;
+      if (appLogo) {
+        const setHref = (selector) => {
+          const el = document.querySelector(selector);
+          if (el) el.setAttribute("href", appLogo);
+        };
+        setHref('link[rel="icon"]');
+        setHref('link[rel="apple-touch-icon"]');
+      }
+
+      // حقن سكربت Umami فقط إذا كانت القيم متوفرة وصحيحة
+      const analyticsEndpoint = import.meta.env.VITE_ANALYTICS_ENDPOINT;
+      const analyticsWebsiteId = import.meta.env.VITE_ANALYTICS_WEBSITE_ID;
+
+      if (analyticsEndpoint && analyticsWebsiteId) {
+        const s = document.createElement("script");
+        s.async = true;
+        s.defer = true;
+        // الصيغة الصحيحة المعتادة لملف Umami
+        s.src = `${analyticsEndpoint.replace(/\/+$/, "")}/script.js`;
+        s.setAttribute("data-website-id", analyticsWebsiteId);
+        document.body.appendChild(s);
+      }
+    </script>
+  </body>
 </html>
