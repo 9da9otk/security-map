@@ -113,6 +113,35 @@
   --sidebar-ring: oklch(0.488 0.243 264.376);
 }
 
+/* ====== تثبيت ارتفاع الصفحة والخريطة ====== */
+html, body, #root {
+  height: 100%;
+  min-height: 100%;
+}
+
+/* غلاف صفحة الخريطة (اختياري لو استخدمته) */
+.maplibre-page {
+  position: relative;
+  height: 100vh;
+}
+
+/* حاوية الخريطة: تغطي الشاشة أسفل كل شيء */
+#map {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+}
+
+/* لوحات التحكم/المحرر فوق الخريطة */
+.map-panel {
+  z-index: 20;
+  backdrop-filter: blur(2px);
+  background: color-mix(in oklab, var(--card) 95%, transparent);
+}
+
+/* إزالة حدود التركيز من كانفس الخريطة */
+.maplibregl-canvas:focus { outline: none; }
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -134,24 +163,11 @@
 }
 
 @layer components {
-  /**
-   * Custom container utility that centers content and adds responsive padding.
-   *
-   * This overrides Tailwind's default container behavior to:
-   * - Auto-center content (mx-auto)
-   * - Add responsive horizontal padding
-   * - Set max-width for large screens
-   *
-   * Usage: <div className="container">...</div>
-   *
-   * For custom widths, use max-w-* utilities directly:
-   * <div className="max-w-6xl mx-auto px-4">...</div>
-   */
   .container {
     width: 100%;
     margin-left: auto;
     margin-right: auto;
-    padding-left: 1rem; /* 16px - mobile padding */
+    padding-left: 1rem;
     padding-right: 1rem;
   }
 
@@ -161,17 +177,14 @@
   }
 
   @media (min-width: 640px) {
-    .container {
-      padding-left: 1.5rem; /* 24px - tablet padding */
-      padding-right: 1.5rem;
-    }
+    .container { padding-left: 1.5rem; padding-right: 1.5rem; }
   }
 
   @media (min-width: 1024px) {
     .container {
-      padding-left: 2rem; /* 32px - desktop padding */
+      padding-left: 2rem;
       padding-right: 2rem;
-      max-width: 1280px; /* Standard content width */
+      max-width: 1280px;
     }
   }
 }
