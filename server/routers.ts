@@ -46,19 +46,17 @@ const locationsRouter = t.router({
     )
     .mutation(async ({ input }) => {
       const db = await getDb();
-      const [res] = await db
-        .insert(locations)
-        .values({
-          name: input.name,
-          description: input.description ?? null,
-          latitude: input.latitude,
-          longitude: input.longitude,
-          locationType: input.locationType,
-          radius: input.radius ?? null,
-          isActive: 1,
-        })
-        .$returningId(); // يدعم mysql2 مع drizzle >=0.37 تقريباً
-      return { id: res.id };
+      await db.insert(locations).values({
+        name: input.name,
+        description: input.description ?? null,
+        latitude: input.latitude,
+        longitude: input.longitude,
+        locationType: input.locationType,
+        radius: input.radius ?? null,
+        isActive: 1,
+      });
+      // لا نعتمد على returning ID لضمان التوافق
+      return { ok: true };
     }),
 
   update: t.procedure
@@ -114,19 +112,17 @@ const personnelRouter = t.router({
     )
     .mutation(async ({ input }) => {
       const db = await getDb();
-      const [res] = await db
-        .insert(personnelTable)
-        .values({
-          locationId: input.locationId,
-          name: input.name,
-          role: input.role,
-          phone: input.phone ?? null,
-          email: input.email ?? null,
-          personnelType: input.personnelType,
-          notes: input.notes ?? null,
-        })
-        .$returningId();
-      return { id: res.id };
+      await db.insert(personnelTable).values({
+        locationId: input.locationId,
+        name: input.name,
+        role: input.role,
+        phone: input.phone ?? null,
+        email: input.email ?? null,
+        personnelType: input.personnelType,
+        notes: input.notes ?? null,
+      });
+      // لا نعتمد على returning ID لضمان التوافق
+      return { ok: true };
     }),
 
   update: t.procedure
