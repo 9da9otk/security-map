@@ -1,8 +1,8 @@
-// server/routers.ts
 import { initTRPC } from "@trpc/server";
 import type { Context } from "./_core/context";
 import { z } from "zod";
-import { getDb, locations, personnelTable } from "./db";
+import { getDb } from "./db";
+import { locations, personnel as personnelTable } from "../drizzle/schema";
 import { eq, desc } from "drizzle-orm";
 
 const t = initTRPC.context<Context>().create();
@@ -11,7 +11,6 @@ const t = initTRPC.context<Context>().create();
 const locationsRouter = t.router({
   list: t.procedure.query(async () => {
     const db = await getDb();
-    // لا تعتمد على updatedAt لتفادي أخطاء الأعمدة القديمة
     return db.select().from(locations).orderBy(desc(locations.id));
   }),
 
@@ -19,36 +18,23 @@ const locationsRouter = t.router({
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input }) => {
       const db = await getDb();
-      const [loc] = await db
-        .select()
-        .from(locations)
-        .where(eq(locations.id, input.id))
-        .limit(1);
-
+      const [loc] = await db.select().from(locations).where(eq(locations.id, input.id)).limit(1);
       if (!loc) return null;
 
-      const people = await db
-        .select()
-        .from(personnelTable)
-        .where(eq(personnelTable.locationId, loc.id));
-
+      const people = await db.select().from(personnelTable).where(eq(personnelTable.locationId, loc.id));
       return { ...loc, personnel: people };
     }),
 
   create: t.procedure
-    .input(
-      z.object({
-        name: z.string().min(1),
-        description: z.string().optional().nullable(),
-        latitude: z.string().min(1),
-        longitude: z.string().min(1),
-        locationType: z.enum(["security", "traffic", "mixed"]),
-        radius: z.number().int().optional().nullable(),
-        // NEW: نخزن تنسيق الدائرة JSON بالعامود notes
-        notes: z.string().optional().nullable(),
-        isActive: z.number().int().optional().nullable(),
-      })
-    )
+    .input(z.object({
+      name: z.string().min(1),
+      description: z.string().optional().nullable(),
+      latitude: z.string().min(1),
+      longitude: z.string().min(1),
+      locationType: z.enum(["security","traffic","mixed"]),
+      radius: z.number().int().optional().nullable(),
+      notes: z.string().optional().nullable(),   // 👈 جديد
+    }))
     .mutation(async ({ input }) => {
       const db = await getDb();
       const result = await db.insert(locations).values({
@@ -58,45 +44,31 @@ const locationsRouter = t.router({
         longitude: input.longitude,
         locationType: input.locationType,
         radius: input.radius ?? null,
-        notes: input.notes ?? null,
-        isActive: input.isActive ?? 1,
+        notes: input.notes ?? null,              // 👈 مهم
+        isActive: 1,
       });
       const id = (result as any)?.insertId ?? undefined;
       return id ? { id } : { ok: true };
     }),
 
   update: t.procedure
-    .input(
-      z.object({
-        id: z.number().int().positive(),
-        name: z.string().min(1),
-        description: z.string().optional().nullable(),
-        // latitude/longitude اختيارية هنا لأن التحرير غالبًا بصري فقط
-        latitude: z.string().optional().nullable(),
-        longitude: z.string().optional().nullable(),
-        locationType: z.enum(["security", "traffic", "mixed"]),
-        radius: z.number().int().optional().nullable(),
-        // NEW: نمط الدائرة
-        notes: z.string().optional().nullable(),
-        isActive: z.number().int().optional().nullable(),
-      })
-    )
+    .input(z.object({
+      id: z.number().int().positive(),
+      name: z.string().min(1),
+      description: z.string().optional().nullable(),
+      locationType: z.enum(["security","traffic","mixed"]),
+      radius: z.number().int().optional().nullable(),
+      notes: z.string().optional().nullable(),   // 👈 جديد
+    }))
     .mutation(async ({ input }) => {
       const db = await getDb();
-      await db
-        .update(locations)
-        .set({
-          name: input.name,
-          description: input.description ?? null,
-          // لا نغيّر الإحداثيات إلا إذا وصلت
-          ...(input.latitude != null ? { latitude: input.latitude ?? null } : {}),
-          ...(input.longitude != null ? { longitude: input.longitude ?? null } : {}),
-          locationType: input.locationType,
-          radius: input.radius ?? null,
-          notes: input.notes ?? null,
-          ...(input.isActive != null ? { isActive: input.isActive } : {}),
-        })
-        .where(eq(locations.id, input.id));
+      await db.update(locations).set({
+        name: input.name,
+        description: input.description ?? null,
+        locationType: input.locationType,
+        radius: input.radius ?? null,
+        notes: input.notes ?? null,              // 👈 مهم
+      }).where(eq(locations.id, input.id));
       return { ok: true };
     }),
 
@@ -109,38 +81,24 @@ const locationsRouter = t.router({
     }),
 });
 
-/* ---------- Personnel ---------- */
+/* ---------- Personnel (كما هو) ---------- */
 const personnelRouter = t.router({
-  // NEW: لعرض أفراد الموقع في المحرّر
-  listByLocation: t.procedure
-    .input(z.object({ locationId: z.number().int().positive() }))
-    .query(async ({ input }) => {
-      const db = await getDb();
-      return db
-        .select()
-        .from(personnelTable)
-        .where(eq(personnelTable.locationId, input.locationId))
-        .orderBy(desc(personnelTable.id));
-    }),
-
   create: t.procedure
-    .input(
-      z.object({
-        locationId: z.number().int().positive(),
-        name: z.string().min(1),
-        role: z.string().optional().nullable(),
-        phone: z.string().optional().nullable(),
-        email: z.string().email().optional().nullable(),
-        personnelType: z.enum(["security", "traffic"]).optional().default("security"),
-        notes: z.string().optional().nullable(),
-      })
-    )
+    .input(z.object({
+      locationId: z.number().int().positive(),
+      name: z.string().min(1),
+      role: z.string().min(1),
+      phone: z.string().optional().nullable(),
+      email: z.string().email().optional().nullable(),
+      personnelType: z.enum(["security","traffic"]),
+      notes: z.string().optional().nullable(),
+    }))
     .mutation(async ({ input }) => {
       const db = await getDb();
       const result = await db.insert(personnelTable).values({
         locationId: input.locationId,
         name: input.name,
-        role: input.role ?? null,
+        role: input.role,
         phone: input.phone ?? null,
         email: input.email ?? null,
         personnelType: input.personnelType,
@@ -151,30 +109,25 @@ const personnelRouter = t.router({
     }),
 
   update: t.procedure
-    .input(
-      z.object({
-        id: z.number().int().positive(),
-        name: z.string().min(1),
-        role: z.string().optional().nullable(),
-        phone: z.string().optional().nullable(),
-        email: z.string().email().optional().nullable(),
-        personnelType: z.enum(["security", "traffic"]).optional().default("security"),
-        notes: z.string().optional().nullable(),
-      })
-    )
+    .input(z.object({
+      id: z.number().int().positive(),
+      name: z.string().min(1),
+      role: z.string().min(1),
+      phone: z.string().optional().nullable(),
+      email: z.string().email().optional().nullable(),
+      personnelType: z.enum(["security","traffic"]),
+      notes: z.string().optional().nullable(),
+    }))
     .mutation(async ({ input }) => {
       const db = await getDb();
-      await db
-        .update(personnelTable)
-        .set({
-          name: input.name,
-          role: input.role ?? null,
-          phone: input.phone ?? null,
-          email: input.email ?? null,
-          personnelType: input.personnelType,
-          notes: input.notes ?? null,
-        })
-        .where(eq(personnelTable.id, input.id));
+      await db.update(personnelTable).set({
+        name: input.name,
+        role: input.role,
+        phone: input.phone ?? null,
+        email: input.email ?? null,
+        personnelType: input.personnelType,
+        notes: input.notes ?? null,
+      }).where(eq(personnelTable.id, input.id));
       return { ok: true };
     }),
 
@@ -187,7 +140,6 @@ const personnelRouter = t.router({
     }),
 });
 
-/* ---------- App Router ---------- */
 export const appRouter = t.router({
   health: t.procedure.query(() => "ok"),
   locations: locationsRouter,
