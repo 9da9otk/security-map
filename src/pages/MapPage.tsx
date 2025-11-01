@@ -3,7 +3,6 @@ import maplibregl, { Map, LngLatLike, MapLayerMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "@/styles/map.css";
 import * as turf from "@turf/turf";
-
 import { trpc } from "@/lib/trpc";
 
 const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
@@ -15,13 +14,7 @@ const STYLE_MAPTILER = MAPTILER_KEY
   : null;
 const STYLE_FALLBACK = "https://demotiles.maplibre.org/style.json";
 
-type StyleJSON = {
-  fill?: string;
-  fillOpacity?: number;
-  stroke?: string;
-  strokeWidth?: number;
-  strokeEnabled?: boolean;
-};
+type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number; strokeEnabled?: boolean; };
 const parseStyle = (s?: string | null): StyleJSON => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 const styleJSON = (o: StyleJSON) => JSON.stringify(o ?? {});
 const circlePolygonFor = (lng: number, lat: number, r: number) =>
@@ -34,25 +27,21 @@ export default function MapPage() {
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const loadedRef = useRef(false);
 
+  // وضع الصفحة + الاختيار الحالي
   const [mode, setMode] = useState<Mode>("view");
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  // tRPC queries/mutations
+  // tRPC
   const listQ   = trpc.locations.list.useQuery();
   const getQ    = trpc.locations.getById.useQuery({ id: selectedId ?? 0 }, { enabled: selectedId != null, refetchOnWindowFocus: false });
   const createM = trpc.locations.create.useMutation();
   const updateM = trpc.locations.update.useMutation();
   const deleteM = trpc.locations.delete.useMutation();
 
-  // ---------- بيانات من القاعدة ----------
   const listData: any[] = listQ.data ?? [];
+  const selectedLoc = useMemo(() => listData.find((x) => Number(x.id) === selectedId), [listData, selectedId]);
 
-  const selectedLoc = useMemo(
-    () => listData.find((x) => Number(x.id) === selectedId),
-    [listData, selectedId]
-  );
-
-  // ---------- حالة التحرير/الإنشاء ----------
+  // حالة المحرر
   const s0 = parseStyle(selectedLoc?.notes);
   const [edit, setEdit] = useState({
     name: "",
@@ -67,11 +56,9 @@ export default function MapPage() {
   });
 
   // مسودة الإنشاء
-  const [draft, setDraft] = useState<{ lat: number | null; lng: number | null }>(
-    { lat: null, lng: null }
-  );
+  const [draft, setDraft] = useState<{ lat: number | null; lng: number | null }>({ lat: null, lng: null });
 
-  // حمّل قيم التحرير عند تغيير الاختيار
+  // حمّل قيم التحرير عند تغيّر الاختيار
   useEffect(() => {
     if (!selectedLoc) return;
     const s = parseStyle(selectedLoc.notes);
@@ -88,7 +75,7 @@ export default function MapPage() {
     });
   }, [selectedLoc?.id]);
 
-  // ---------- GeoJSON (يشمل المسودة عند الإنشاء) ----------
+  // ===== GeoJSON (يشمل المسودة عند الإنشاء) =====
   const geojson = useMemo(() => {
     const fc: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
     for (const loc of listData) {
@@ -132,8 +119,7 @@ export default function MapPage() {
           stroke: edit.stroke,
           strokeWidth: edit.strokeWidth,
           strokeEnabled: edit.strokeEnabled,
-          lat: draft.lat,
-          lng: draft.lng,
+          lat: draft.lat, lng: draft.lng,
         },
       } as any);
     }
@@ -151,7 +137,7 @@ export default function MapPage() {
     src.setData(JSON.parse(JSON.stringify(payload)));
   }
 
-  // ---------- إنشاء الخريطة ----------
+  // ===== إنشاء الخريطة =====
   useEffect(() => {
     if (mapRef.current) return;
 
@@ -168,11 +154,7 @@ export default function MapPage() {
 
     const prepare = () => {
       if (!map.getSource("locations-src")) {
-        map.addSource("locations-src", {
-          type: "geojson",
-          data: { type: "FeatureCollection", features: [] },
-          promoteId: "id",
-        });
+        map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
 
         map.addLayer({
           id: "loc-fill",
@@ -192,7 +174,7 @@ export default function MapPage() {
           paint: {
             "line-color": ["coalesce", ["get", "stroke"], "#b45309"],
             "line-width": ["coalesce", ["get", "strokeWidth"], 2],
-            "line-opacity": ["case", ["==", ["get", "strokeEnabled"], true], 1, 0],
+            "line-opacity": ["case", ["==", ["get", "strokeEnabled"], true], 1, 0], // تفعيل/تعطيل الحدود
           },
         });
 
@@ -210,16 +192,11 @@ export default function MapPage() {
       map.once("styledata", () => { prepare(); setSourceData(); setTimeout(() => map.resize(), 0); });
     });
 
-    map.on("load", () => {
-      loadedRef.current = true;
-      prepare();
-      setSourceData();
-      setTimeout(() => map.resize(), 0);
-    });
+    map.on("load", () => { loadedRef.current = true; prepare(); setSourceData(); setTimeout(() => map.resize(), 0); });
 
-    // تفاعل الخريطة
+    // Hover popup
     const onEnter = () => (map.getCanvas().style.cursor = "pointer");
-    const onLeave = () => (map.getCanvas().style.cursor = "");
+    const onLeave = () => { map.getCanvas().style.cursor = ""; popupRef.current?.remove(); };
     const onMove = (e: MapLayerMouseEvent) => {
       const f = e.features?.[0]; if (!f) return;
       const p = f.properties as any;
@@ -245,36 +222,31 @@ export default function MapPage() {
     map.on("mousemove", "loc-fill", onMove);
     map.on("click", "loc-fill", onClickFill);
 
-    // عند وضع الإنشاء، ضغطة على الخريطة تحدد المركز
+    // وضع الإنشاء: ضغطة على الخريطة تحدد المركز وتظهر دائرة المسودة فورًا
     const onClickMap = (e: maplibregl.MapMouseEvent & maplibregl.EventData) => {
       if (mode !== "create") return;
       const { lng, lat } = e.lngLat.wrap();
       setDraft({ lat, lng });
-      // ادفع GeoJSON جديد ليظهر شكل المسودة
+
       const current = geojsonRef.current;
-      const updated = { ...current, features: [...current.features.filter(f => (f as any).id !== -1),
-        {
-          type: "Feature",
-          id: -1,
-          geometry: circlePolygonFor(lng, lat, edit.radius).geometry,
-          properties: {
-            id: -1,
-            name: edit.name || "موقع جديد",
-            type: edit.type,
-            radius: edit.radius,
-            fill: edit.fill,
-            fillOpacity: edit.fillOpacity,
-            stroke: edit.stroke,
-            strokeWidth: edit.strokeWidth,
-            strokeEnabled: edit.strokeEnabled,
-            lat, lng,
-          },
-        } as any
-      ]} as GeoJSON.FeatureCollection;
+      const draftFeat: any = {
+        type: "Feature",
+        id: -1,
+        geometry: circlePolygonFor(lng, lat, edit.radius).geometry,
+        properties: {
+          id: -1, name: edit.name || "موقع جديد", type: edit.type, radius: edit.radius,
+          fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke,
+          strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
+          lat, lng,
+        },
+      };
+      const updated = {
+        ...current,
+        features: [...current.features.filter((f: any) => f.id !== -1), draftFeat],
+      } as GeoJSON.FeatureCollection;
       geojsonRef.current = updated;
       setSourceData(updated);
     };
-
     map.on("click", onClickMap);
 
     const onResize = () => map.resize();
@@ -288,19 +260,18 @@ export default function MapPage() {
     };
   }, [mode, edit]);
 
-  // حدّث المصدر عند تغيير GeoJSON
+  // حدّث المصدر عند تغيّر GeoJSON
   useEffect(() => {
     if (!mapRef.current) return;
     if (loadedRef.current) setSourceData();
     else mapRef.current.once("load", setSourceData);
   }, [geojson]);
 
-  // ---------- معاينة حيّة (immutable) ----------
+  // ===== المعاينة الحية (تعمل في التعديل والإنشاء) =====
   function live(partial: Partial<typeof edit>) {
     setEdit((prev) => {
       const next = { ...prev, ...partial };
-
-      const current = geojsonRef.current as GeoJSON.FeatureCollection;
+      const current = geojsonRef.current;
 
       const newFeatures = current.features.map((feat: any) => {
         const isDraft = feat.id === -1 && mode === "create";
@@ -315,10 +286,7 @@ export default function MapPage() {
         p.strokeEnabled = !!next.strokeEnabled;
         p.radius = next.radius;
 
-        const baseLng = Number(p.lng);
-        const baseLat = Number(p.lat);
-        const poly = circlePolygonFor(baseLng, baseLat, next.radius);
-
+        const poly = circlePolygonFor(Number(p.lng), Number(p.lat), next.radius);
         return { ...feat, properties: p, geometry: poly.geometry };
       });
 
@@ -329,15 +297,12 @@ export default function MapPage() {
     });
   }
 
-  // ---------- أفعال الحفظ/الحذف/الإغلاق ----------
+  // أفعال الحفظ/الحذف/الإلغاء
   async function saveEdit() {
     if (selectedId == null) return;
     const notes = styleJSON({
-      fill: edit.fill,
-      fillOpacity: edit.fillOpacity,
-      stroke: edit.stroke,
-      strokeWidth: edit.strokeWidth,
-      strokeEnabled: edit.strokeEnabled,
+      fill: edit.fill, fillOpacity: edit.fillOpacity,
+      stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
     });
 
     try {
@@ -347,25 +312,18 @@ export default function MapPage() {
         description: edit.description,
         locationType: edit.type,
         radius: edit.radius,
-        notes, // مهم: احفظ الستايل
+        notes,
       } as any);
     } catch {
       await fetch(`/api/locations/${selectedId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          name: edit.name,
-          description: edit.description,
-          locationType: edit.type,
-          radius: edit.radius,
-          notes,
-        }),
+        body: JSON.stringify({ name: edit.name, description: edit.description, locationType: edit.type, radius: edit.radius, notes }),
       });
     }
     await listQ.refetch();
-    setMode("view");
-    setSelectedId(null);
+    setMode("view"); setSelectedId(null);
   }
 
   async function deleteLoc() {
@@ -377,15 +335,11 @@ export default function MapPage() {
       await fetch(`/api/locations/${selectedId}`, { method: "DELETE", credentials: "include" });
     }
     await listQ.refetch();
-    setMode("view");
-    setSelectedId(null);
+    setMode("view"); setSelectedId(null);
   }
 
   async function saveCreate() {
-    if (draft.lat == null || draft.lng == null) {
-      alert("اختر نقطة على الخريطة أولاً (اضغط لتحديد المركز).");
-      return;
-    }
+    if (draft.lat == null || draft.lng == null) { alert("اضغط على الخريطة لتحديد المركز."); return; }
     try {
       await createM.mutateAsync({
         name: edit.name || "موقع",
@@ -394,8 +348,10 @@ export default function MapPage() {
         longitude: String(draft.lng),
         locationType: edit.type,
         radius: edit.radius,
-        // ملاحظة: لو كانت create في الراوتر لا تستقبل notes، سيتم الحفظ بالافتراضي،
-        // ويمكن تعديل الستايل لاحقًا من وضع التعديل.
+        notes: styleJSON({
+          fill: edit.fill, fillOpacity: edit.fillOpacity,
+          stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
+        }),
       } as any);
     } catch {
       await fetch(`/api/locations`, {
@@ -405,34 +361,32 @@ export default function MapPage() {
         body: JSON.stringify({
           name: edit.name || "موقع",
           description: edit.description || null,
-          latitude: draft.lat,
-          longitude: draft.lng,
-          locationType: edit.type,
-          radius: edit.radius,
+          latitude: draft.lat, longitude: draft.lng,
+          locationType: edit.type, radius: edit.radius,
+          notes: styleJSON({
+            fill: edit.fill, fillOpacity: edit.fillOpacity,
+            stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled,
+          }),
         }),
       });
     }
     await listQ.refetch();
-    setMode("view");
-    setDraft({ lat: null, lng: null });
-    setSelectedId(null);
+    cancel();
   }
 
   function cancel() {
     setMode("view");
     setSelectedId(null);
     setDraft({ lat: null, lng: null });
-    // إعادة رسم لمسح المسودة إن وجدت
     const current = geojsonRef.current as GeoJSON.FeatureCollection;
     const updated = { ...current, features: current.features.filter((f: any) => f.id !== -1) } as GeoJSON.FeatureCollection;
     geojsonRef.current = updated;
     setSourceData(updated);
   }
 
-  // ---------- UI ----------
+  // ===== UI =====
   return (
     <div className="maplibre-page">
-      {/* الخريطة */}
       <div id="map" />
 
       {/* لستة المواقع + زر موقع جديد */}
@@ -495,9 +449,9 @@ export default function MapPage() {
           </div>
 
           <div className="form-row" style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <input id="strokeEnabled" type="checkbox" checked={!!edit.strokeEnabled}
+            <input id="strokeEnabled_edit" type="checkbox" checked={!!edit.strokeEnabled}
               onChange={(e) => live({ strokeEnabled: e.target.checked })} />
-            <label htmlFor="strokeEnabled" style={{ margin:0 }}>تفعيل الحدود</label>
+            <label htmlFor="strokeEnabled_edit" style={{ margin:0 }}>تفعيل الحدود</label>
           </div>
 
           <div className="form-row"><label>لون الحدود</label>
@@ -526,7 +480,7 @@ export default function MapPage() {
           </div>
 
           <div style={{ background:"#f8fafc", border:"1px dashed #cbd5e1", borderRadius:8, padding:10, fontSize:13, color:"#334155", marginBottom:10 }}>
-            اضغط على الخريطة لاختيار مركز الدائرة.
+            اضغط على الخريطة لاختيار مركز الدائرة (تظهر فورًا).
           </div>
 
           <div className="form-row"><label>اسم الموقع</label>
@@ -579,9 +533,7 @@ export default function MapPage() {
           </div>
 
           <div style={{ display:"flex", gap:8, marginTop:12 }}>
-            <button className="btn" onClick={saveCreate} disabled={draft.lat == null || draft.lng == null}>
-              حفظ الموقع
-            </button>
+            <button className="btn" onClick={saveCreate} disabled={draft.lat == null || draft.lng == null}>حفظ الموقع</button>
             <button className="btn secondary" onClick={cancel}>إلغاء</button>
           </div>
         </div>
