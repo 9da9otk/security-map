@@ -16,9 +16,15 @@ import "maplibre-gl/dist/maplibre-gl.css";
 const EPHEMERAL_ASSIGNMENTS =
   (import.meta.env.VITE_EPHEMERAL_ASSIGNMENTS ?? "true") === "true";
 
-// ثابت وحيد للمركز والزوم
+/* ===================== إعداد الدرعية (الوضع الافتراضي) ===================== */
+// مركز الدرعية التقريبي [lng, lat]
 const DIRIYAH_CENTER_LNG_LAT: [number, number] = [46.67, 24.74];
 const DIRIYAH_ZOOM = 13;
+
+// حدود بسيطة للقبول (داخل الدرعية تقريبًا)
+const isInDiriyah = (lat: number, lng: number) =>
+  lat >= 24.600000 && lat <= 24.900000 && lng >= 46.400000 && lng <= 46.800000;
+/* ========================================================================== */
 
 interface Location {
   id: number;
@@ -92,8 +98,8 @@ export default function MapPage() {
   }>({
     name: "",
     description: "",
-    latitude: "24.74",
-    longitude: "46.67",
+    latitude: String(DIRIYAH_CENTER_LNG_LAT[1]), // 24.74
+    longitude: String(DIRIYAH_CENTER_LNG_LAT[0]), // 46.67
     locationType: "mixed",
     radius: 50,
   });
@@ -128,6 +134,7 @@ export default function MapPage() {
     },
     onError: (err) => {
       console.error("TRPC create location error:", err);
+      alert("تعذر حفظ الموقع (تحقق من الإحداثيات داخل نطاق الدرعية).");
     },
   });
 
@@ -204,8 +211,8 @@ export default function MapPage() {
     setLocationForm({
       name: "",
       description: "",
-      latitude: "24.74",
-      longitude: "46.67",
+      latitude: String(DIRIYAH_CENTER_LNG_LAT[1]),
+      longitude: String(DIRIYAH_CENTER_LNG_LAT[0]),
       locationType: "mixed",
       radius: 50,
     });
@@ -241,8 +248,8 @@ export default function MapPage() {
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: styleUrl,
-      center: DIRIYAH_CENTER_LNG_LAT,
-      zoom: DIRIYAH_ZOOM,
+      center: DIRIYAH_CENTER_LNG_LAT, // ✅ يبدأ في الدرعية
+      zoom: DIRIYAH_ZOOM,             // ✅ زوم افتراضي مناسب
       attributionControl: false,
     });
     mapRef.current = map;
@@ -393,7 +400,17 @@ export default function MapPage() {
 
     const onMapClick = (e: maplibregl.MapMouseEvent & maplibregl.EventData) => {
       if (!isSelectingLocation) return;
-      const lngLat = e.lngLat as unknown as { lng: number; lat: number };
+
+      // استخدم wrap لضمان الإحداثيات ضمن النطاق العالمي الصحيح
+      const wrapped = (e.lngLat as maplibregl.LngLat).wrap();
+      const lat = Number(wrapped.lat.toFixed(6));
+      const lng = Number(wrapped.lng.toFixed(6));
+
+      // التحقق أن النقطة داخل حدود الدرعية
+      if (!isInDiriyah(lat, lng)) {
+        alert("اختر نقطة داخل نطاق الدرعية.");
+        return;
+      }
 
       if (tempMarkerRef.current) {
         tempMarkerRef.current.remove();
@@ -401,18 +418,20 @@ export default function MapPage() {
       }
 
       const m = new maplibregl.Marker({ color: "#5B3A1E" })
-        .setLngLat([lngLat.lng, lngLat.lat])
+        .setLngLat([lng, lat])
         .addTo(map);
       tempMarkerRef.current = m;
 
       setLocationForm((prev) => ({
         ...prev,
-        latitude: lngLat.lat.toString(),
-        longitude: lngLat.lng.toString(),
+        latitude: String(lat),
+        longitude: String(lng),
       }));
     };
 
     if (isSelectingLocation) {
+      // عند بدء الاختيار اعرض الدرعية وكرّسير التقاطع
+      map.easeTo({ center: DIRIYAH_CENTER_LNG_LAT, zoom: DIRIYAH_ZOOM });
       map.getCanvas().style.cursor = "crosshair";
       map.on("click", onMapClick);
     } else {
@@ -447,16 +466,23 @@ export default function MapPage() {
     geolocateRef.current?.trigger();
   };
 
-  // 🔐 حفظ الموقع: جرّب tRPC أولًا، ولو فشل إرجع لـ REST (مضمون)
+  // حفظ الموقع
   const handleAddLocation = async () => {
     try {
-      // تحقق بسيط
       if (!locationForm.name.trim()) {
         alert("فضلاً أدخل اسم الموقع");
         return;
       }
-      if (!locationForm.latitude || !locationForm.longitude) {
-        alert("فضلاً اختر إحداثيات الموقع من الخريطة");
+
+      const lat = Number(locationForm.latitude);
+      const lng = Number(locationForm.longitude);
+
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        alert("فضلاً اختر إحداثيات صحيحة من الخريطة");
+        return;
+      }
+      if (!isInDiriyah(lat, lng)) {
+        alert("الإحداثيات خارج نطاق الدرعية.");
         return;
       }
 
@@ -464,25 +490,30 @@ export default function MapPage() {
         await updateLocationMutation.mutateAsync({
           id: editingLocation.id,
           ...locationForm,
+          latitude: String(lat),
+          longitude: String(lng),
         });
       } else {
+        // جرّب tRPC أولاً
         let saved = false;
-
-        // محاولة tRPC
         try {
-          await createLocationMutation.mutateAsync(locationForm as any);
+          await createLocationMutation.mutateAsync({
+            ...locationForm,
+            latitude: String(lat),
+            longitude: String(lng),
+          } as any);
           saved = true;
         } catch (e) {
           console.warn("tRPC create failed, falling back to REST:", e);
         }
 
-        // REST fallback
+        // REST كاحتياط
         if (!saved) {
           const resp = await axios.post("/api/locations", {
             name: locationForm.name,
             description: locationForm.description || null,
-            latitude: locationForm.latitude,
-            longitude: locationForm.longitude,
+            latitude: String(lat),
+            longitude: String(lng),
             locationType: locationForm.locationType,
             radius: locationForm.radius ?? null,
           });
@@ -592,13 +623,16 @@ export default function MapPage() {
     setLocationForm({
       name: "",
       description: "",
-      latitude: "24.74",
-      longitude: "46.67",
+      latitude: String(DIRIYAH_CENTER_LNG_LAT[1]),
+      longitude: String(DIRIYAH_CENTER_LNG_LAT[0]),
       locationType: "mixed",
       radius: 50,
     });
     setIsSelectingLocation(true);
     setShowAddLocation(true);
+
+    // ركّز الخريطة على الدرعية عند البدء
+    mapRef.current?.easeTo({ center: DIRIYAH_CENTER_LNG_LAT, zoom: DIRIYAH_ZOOM });
   };
 
   const handleCancelSelection = () => {
@@ -662,10 +696,9 @@ export default function MapPage() {
               {isSelectingLocation && (
                 <div className="border-t pt-3 space-y-3">
                   <div className="bg-blue-50 p-3 rounded-lg text-sm text-blue-800">
-                    اضغط على الخريطة لاختيار الموقع
+                    اضغط على الخريطة لاختيار الموقع (داخل نطاق الدرعية)
                   </div>
 
-                  {/* ✅ النموذج يظهر دائمًا في وضع التحديد */}
                   <div className="space-y-3 border-t pt-3">
                     <div>
                       <Label>اسم الموقع</Label>
@@ -691,28 +724,19 @@ export default function MapPage() {
                         className="h-20"
                       />
                     </div>
+
+                    {/* الإحداثيات → للعرض فقط وتُملأ من الخريطة */}
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <Label>Lat (خط العرض)</Label>
-                        <Input
-                          value={locationForm.latitude}
-                          onChange={(e) =>
-                            setLocationForm({ ...locationForm, latitude: e.target.value })
-                          }
-                          placeholder="24.74"
-                        />
+                        <Input value={locationForm.latitude} readOnly placeholder="اختر من الخريطة" />
                       </div>
                       <div>
                         <Label>Lng (خط الطول)</Label>
-                        <Input
-                          value={locationForm.longitude}
-                          onChange={(e) =>
-                            setLocationForm({ ...locationForm, longitude: e.target.value })
-                          }
-                          placeholder="46.67"
-                        />
+                        <Input value={locationForm.longitude} readOnly placeholder="اختر من الخريطة" />
                       </div>
                     </div>
+
                     <div>
                       <Label>نوع الموقع</Label>
                       <Select
