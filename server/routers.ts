@@ -46,7 +46,7 @@ const locationsRouter = t.router({
     )
     .mutation(async ({ input }) => {
       const db = await getDb();
-      await db.insert(locations).values({
+      const result = await db.insert(locations).values({
         name: input.name,
         description: input.description ?? null,
         latitude: input.latitude,
@@ -55,8 +55,9 @@ const locationsRouter = t.router({
         radius: input.radius ?? null,
         isActive: 1,
       });
-      // لا نعتمد على returning ID لضمان التوافق
-      return { ok: true };
+      // مع mysql2: النتيجة تحتوي insertId
+      const id = (result as any)?.insertId ?? undefined;
+      return id ? { id } : { ok: true };
     }),
 
   update: t.procedure
@@ -112,7 +113,7 @@ const personnelRouter = t.router({
     )
     .mutation(async ({ input }) => {
       const db = await getDb();
-      await db.insert(personnelTable).values({
+      const result = await db.insert(personnelTable).values({
         locationId: input.locationId,
         name: input.name,
         role: input.role,
@@ -121,8 +122,8 @@ const personnelRouter = t.router({
         personnelType: input.personnelType,
         notes: input.notes ?? null,
       });
-      // لا نعتمد على returning ID لضمان التوافق
-      return { ok: true };
+      const id = (result as any)?.insertId ?? undefined;
+      return id ? { id } : { ok: true };
     }),
 
   update: t.procedure
