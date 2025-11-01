@@ -13,9 +13,11 @@ import { Plus, Trash2, Edit2, MapPin, Users, Info, Home, X, Share2, Loader } fro
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-const EPHEMERAL_ASSIGNMENTS = (import.meta.env.VITE_EPHEMERAL_ASSIGNMENTS ?? "true") === "true";
-const DIRIYAH_CENTER: [number, number] = [46.5738, 24.7400];
-const DIRIYAH_BOUNDS: [[number, number],[number, number]] = [[46.5600,24.7320],[46.5850,24.7485]];
+const EPHEMERAL_ASSIGNMENTS =
+  (import.meta.env.VITE_EPHEMERAL_ASSIGNMENTS ?? "true") === "true";
+
+// استخدم ثابت واحد فقط لتفادي التكرار
+const DIRIYAH_CENTER_LNG_LAT: [number, number] = [46.67, 24.74];
 const DIRIYAH_ZOOM = 13;
 
 interface Location {
@@ -44,9 +46,6 @@ interface Personnel {
   updatedAt: Date;
 }
 
-const DIRIYAH_CENTER_LNG_LAT: [number, number] = [46.67, 24.74];
-const DIRIYAH_ZOOM = 13;
-
 export default function MapPage() {
   const [, navigate] = useLocation();
 
@@ -59,7 +58,20 @@ export default function MapPage() {
 
   // حالات الواجهة
   const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
-  const [sessionPersonnel, setSessionPersonnel] = useState<Record<number, Array<{id:number; name:string; role:'قائد فريق'|'رجل أمن ثاني'; phone?:string; email?:string; personnelType:'security'|'traffic'; notes?:string|null;}>>>({});
+  const [sessionPersonnel, setSessionPersonnel] = useState<
+    Record<
+      number,
+      Array<{
+        id: number;
+        name: string;
+        role: "قائد فريق" | "رجل أمن ثاني";
+        phone?: string;
+        email?: string;
+        personnelType: "security" | "traffic";
+        notes?: string | null;
+      }>
+    >
+  >({});
   const [showAddLocation, setShowAddLocation] = useState(false);
   const [showAddPersonnel, setShowAddPersonnel] = useState(false);
   const [showPersonnelDetails, setShowPersonnelDetails] = useState(false);
@@ -229,7 +241,11 @@ export default function MapPage() {
     geolocateRef.current = geolocate;
     map.addControl(geolocate, "top-left");
 
-    popupRef.current = new maplibregl.Popup({ closeButton: false, closeOnClick: true, maxWidth: "360px" });
+    popupRef.current = new maplibregl.Popup({
+      closeButton: false,
+      closeOnClick: true,
+      maxWidth: "360px",
+    });
 
     map.on("load", () => {
       // مصدر المواقع مع عنقدة
@@ -320,12 +336,10 @@ export default function MapPage() {
           const btn = document.getElementById(`show-${props.id}`);
           if (btn) {
             btn.onclick = () => {
-              // افتح مودال التفاصيل الموجود أصلًا
               const original = (locationsQuery.data || []).find((x) => x.id === props.id);
               if (original) {
                 setSelectedLocation(original);
                 setShowPersonnelDetails(true);
-                // زوم للموقع
                 map.easeTo({ center: coords as [number, number], zoom: 16 });
                 setIsZoomedIn(true);
               }
@@ -355,28 +369,25 @@ export default function MapPage() {
     if (src?.setData) src.setData(toGeoJSON(locationsQuery.data || []));
   }, [locationsQuery.data]);
 
-  // وضع اختيار موقع جديد: ضغطة على الخريطة تضيف Marker مؤقت وتعبّي نموذج الإحداثيات
+  // وضع اختيار موقع جديد
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const onMapClick = (e: maplibregl.MapMouseEvent & maplibregl.EventData) => {
       if (!isSelectingLocation) return;
-      const lngLat = (e.lngLat as any) as { lng: number; lat: number };
+      const lngLat = e.lngLat as unknown as { lng: number; lat: number };
 
-      // أزل Marker مؤقت سابق
       if (tempMarkerRef.current) {
         tempMarkerRef.current.remove();
         tempMarkerRef.current = null;
       }
 
-      // أضف Marker مؤقت
       const m = new maplibregl.Marker({ color: "#5B3A1E" })
         .setLngLat([lngLat.lng, lngLat.lat])
         .addTo(map);
       tempMarkerRef.current = m;
 
-      // حدّث النموذج
       setLocationForm((prev) => ({
         ...prev,
         latitude: lngLat.lat.toString(),
@@ -390,8 +401,6 @@ export default function MapPage() {
     } else {
       map.getCanvas().style.cursor = "";
       map.off("click", onMapClick);
-      // إزالة المؤقت لو خرج من وضع التحديد
-      // (نتركه فقط عند الحفظ؟ حسب رغبتك)
     }
 
     return () => {
@@ -400,8 +409,7 @@ export default function MapPage() {
     };
   }, [isSelectingLocation]);
 
-  // أزرار ووظائف
-
+  // وظائف التحكم
   const handleZoomToLocation = (location: Location) => {
     const map = mapRef.current;
     if (!map) return;
@@ -419,7 +427,6 @@ export default function MapPage() {
   };
 
   const handleShowUserLocation = () => {
-    // نستدعي تحكم تحديد الموقع المبني داخل MapLibre
     geolocateRef.current?.trigger();
   };
 
@@ -451,16 +458,24 @@ export default function MapPage() {
           personnelType: personnelForm.personnelType,
           notes: personnelForm.notes || undefined,
         };
-        setSessionPersonnel(prev => {
+        setSessionPersonnel((prev) => {
           const arr = [...(prev[selectedLocation.id] || []), entry];
           const next = { ...prev, [selectedLocation.id]: arr };
           sessionStorage.setItem("assignments", JSON.stringify(next));
           return next;
         });
         setShowAddPersonnel(false);
-        setPersonnelForm({ name: "", role: "", phone: "", email: "", personnelType: "security", notes: null });
+        setPersonnelForm({
+          name: "",
+          role: "",
+          phone: "",
+          email: "",
+          personnelType: "security",
+          notes: null,
+        });
         return;
       }
+
       const data = {
         name: personnelForm.name,
         role: personnelForm.role,
@@ -469,21 +484,9 @@ export default function MapPage() {
         personnelType: personnelForm.personnelType,
         notes: personnelForm.notes || undefined,
       };
-      if (editingPersonnel) {
-        await updatePersonnelMutation.mutateAsync({ id: editingPersonnel.id, ...data });
-      } else {
-        await createPersonnelMutation.mutateAsync({ locationId: selectedLocation.id, ...data });
-      }
-    } catch (error) {
-      console.error("Error saving personnel:", error);
-    }
-  };
 
       if (editingPersonnel) {
-        await updatePersonnelMutation.mutateAsync({
-          id: editingPersonnel.id,
-          ...data,
-        });
+        await updatePersonnelMutation.mutateAsync({ id: editingPersonnel.id, ...data });
       } else {
         await createPersonnelMutation.mutateAsync({
           locationId: selectedLocation.id,
@@ -499,8 +502,13 @@ export default function MapPage() {
     try {
       const raw = sessionStorage.getItem("assignments");
       const assignments = raw ? JSON.parse(raw) : {};
-      const locations = (locationsQuery.data || []).map((l:any) => ({
-        id: l.id, name: l.name, latitude: l.latitude, longitude: l.longitude, locationType: l.locationType, radius: l.radius ?? null,
+      const locations = (locationsQuery.data || []).map((l: any) => ({
+        id: l.id,
+        name: l.name,
+        latitude: l.latitude,
+        longitude: l.longitude,
+        locationType: l.locationType,
+        radius: l.radius ?? null,
       }));
       const resp = await axios.post("/api/snapshots", { assignments, locations });
       const shareUrl = resp.data.url as string;
@@ -520,17 +528,6 @@ export default function MapPage() {
     } catch (e) {
       console.error("Error sharing snapshot:", e);
       alert("تعذر إنشاء رابط المشاركة الآن.");
-    }
-  };
-
-  const getColor = (type: string) => {
-    switch (type) {
-      case "security":
-        return "#a85a4a";
-      case "traffic":
-        return "#4a7ba7";
-      default:
-        return "#a87a4a";
     }
   };
 
@@ -560,14 +557,8 @@ export default function MapPage() {
   return (
     <div className="flex h-screen bg-gray-50">
       <style>{`
-        .diriyah-header {
-          background: linear-gradient(135deg, #a85a4a 0%, #d4a5a0 100%);
-        }
-        .control-card {
-          z-index: 999;
-          pointer-events: auto;
-        }
-        /* اجعل اللوحة فوق الكانفس */
+        .diriyah-header { background: linear-gradient(135deg, #a85a4a 0%, #d4a5a0 100%); }
+        .control-card { z-index: 999; pointer-events: auto; }
         .maplibregl-canvas { z-index: 1; }
       `}</style>
 
@@ -796,11 +787,7 @@ export default function MapPage() {
                     </div>
 
                     {isZoomedIn && (
-                      <Button
-                        onClick={handleZoomOut}
-                        variant="outline"
-                        className="w-full"
-                      >
+                      <Button onClick={handleZoomOut} variant="outline" className="w-full">
                         العودة للعرض العام
                       </Button>
                     )}
@@ -833,10 +820,7 @@ export default function MapPage() {
                 <Input
                   value={personnelForm.name}
                   onChange={(e) =>
-                    setPersonnelForm({
-                      ...personnelForm,
-                      name: e.target.value,
-                    })
+                    setPersonnelForm({ ...personnelForm, name: e.target.value })
                   }
                   placeholder="اسم الفرد"
                 />
@@ -845,9 +829,11 @@ export default function MapPage() {
                 <Label>الدور</Label>
                 <Select
                   value={personnelForm.role as any}
-                  onValueChange={(v:any)=> setPersonnelForm({ ...personnelForm, role: v })}
+                  onValueChange={(v: any) => setPersonnelForm({ ...personnelForm, role: v })}
                 >
-                  <SelectTrigger><SelectValue placeholder="اختر الدور" /></SelectTrigger>
+                  <SelectTrigger>
+                    <SelectValue placeholder="اختر الدور" />
+                  </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="قائد فريق">قائد فريق</SelectItem>
                     <SelectItem value="رجل أمن ثاني">رجل أمن ثاني</SelectItem>
@@ -859,10 +845,7 @@ export default function MapPage() {
                 <Input
                   value={personnelForm.phone}
                   onChange={(e) =>
-                    setPersonnelForm({
-                      ...personnelForm,
-                      phone: e.target.value,
-                    })
+                    setPersonnelForm({ ...personnelForm, phone: e.target.value })
                   }
                   placeholder="0501234567"
                 />
@@ -873,10 +856,7 @@ export default function MapPage() {
                   type="email"
                   value={personnelForm.email}
                   onChange={(e) =>
-                    setPersonnelForm({
-                      ...personnelForm,
-                      email: e.target.value,
-                    })
+                    setPersonnelForm({ ...personnelForm, email: e.target.value })
                   }
                   placeholder="email@example.com"
                 />
@@ -886,10 +866,7 @@ export default function MapPage() {
                 <Select
                   value={personnelForm.personnelType}
                   onValueChange={(value: any) =>
-                    setPersonnelForm({
-                      ...personnelForm,
-                      personnelType: value,
-                    })
+                    setPersonnelForm({ ...personnelForm, personnelType: value })
                   }
                 >
                   <SelectTrigger>
@@ -906,10 +883,7 @@ export default function MapPage() {
                 <Textarea
                   value={personnelForm.notes || ""}
                   onChange={(e) =>
-                    setPersonnelForm({
-                      ...personnelForm,
-                      notes: e.target.value || null,
-                    })
+                    setPersonnelForm({ ...personnelForm, notes: e.target.value || null })
                   }
                   placeholder="ملاحظات إضافية"
                   className="h-20"
@@ -920,8 +894,7 @@ export default function MapPage() {
                   onClick={handleAddPersonnel}
                   className="flex-1 bg-blue-600 hover:bg-blue-700"
                   disabled={
-                    createPersonnelMutation.isPending ||
-                    updatePersonnelMutation.isPending
+                    createPersonnelMutation.isPending || updatePersonnelMutation.isPending
                   }
                 >
                   {editingPersonnel ? "تحديث" : "إضافة"}
@@ -956,16 +929,19 @@ export default function MapPage() {
               </button>
             </CardHeader>
             <CardContent className="pt-4">
-              {(EPHEMERAL_ASSIGNMENTS ? (sessionPersonnel[selectedLocation.id]?.length>0) : (locationDetailsQuery.data?.personnel && locationDetailsQuery.data.personnel.length>0)) ? (
+              {(EPHEMERAL_ASSIGNMENTS
+                ? (sessionPersonnel[selectedLocation.id]?.length ?? 0) > 0
+                : !!locationDetailsQuery.data?.personnel?.length) ? (
                 <div className="space-y-3">
-                  {(EPHEMERAL_ASSIGNMENTS ? (sessionPersonnel[selectedLocation.id]||[]) : locationDetailsQuery.data!.personnel).map((person:any) => (
+                  {(EPHEMERAL_ASSIGNMENTS
+                    ? sessionPersonnel[selectedLocation.id] || []
+                    : locationDetailsQuery.data!.personnel
+                  ).map((person: any) => (
                     <Card key={person.id} className="border-amber-200">
                       <CardContent className="p-3">
                         <div className="flex items-start justify-between mb-2">
                           <div className="flex-1">
-                            <h4 className="font-semibold text-amber-900">
-                              {person.name}
-                            </h4>
+                            <h4 className="font-semibold text-amber-900">{person.name}</h4>
                             <p className="text-sm text-gray-600">{person.role}</p>
                           </div>
                           <span
@@ -1014,7 +990,20 @@ export default function MapPage() {
                           <Button
                             size="sm"
                             variant="destructive"
-                            onClick={() => { if (EPHEMERAL_ASSIGNMENTS) { setSessionPersonnel(prev => { const arr=(prev[selectedLocation.id]||[]).filter((p:any)=>p.id!==person.id); const next={...prev,[selectedLocation.id]:arr}; sessionStorage.setItem('assignments', JSON.stringify(next)); return next; }); } else { deletePersonnelMutation.mutate({ id: person.id }); } }}
+                            onClick={() => {
+                              if (EPHEMERAL_ASSIGNMENTS) {
+                                setSessionPersonnel((prev) => {
+                                  const arr = (prev[selectedLocation.id] || []).filter(
+                                    (p: any) => p.id !== person.id
+                                  );
+                                  const next = { ...prev, [selectedLocation.id]: arr };
+                                  sessionStorage.setItem("assignments", JSON.stringify(next));
+                                  return next;
+                                });
+                              } else {
+                                deletePersonnelMutation.mutate({ id: person.id });
+                              }
+                            }}
                             className="flex-1 gap-1"
                           >
                             <Trash2 className="w-3 h-3" />
