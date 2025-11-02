@@ -1,39 +1,17 @@
-/* حجم كامل ومنع أي white gap */
-html, body, #root { height: 100%; margin: 0; }
-.maplibre-page { position: relative; width: 100%; height: 100%; overflow: hidden; }
-#map { position: absolute; inset: 0; }
+/* Basic responsive layout */
+.map-page { position: relative; height: calc(100vh - 70px); }
+.map-toolbar { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; gap: 8px; }
+.map-container { position: absolute; inset: 0; }
+.map-sidebar { position: absolute; top: 10px; right: 10px; width: 360px; max-height: calc(100vh - 20px); overflow: auto; z-index: 6; }
 
-/* ألواح التحكم */
-.map-panel {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0,0,0,.08);
-  padding: 12px;
-}
+.locations-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.loc-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.55); }
+.loc-row.active { outline: 2px solid rgba(17,139,238,0.6); }
+.loc-row button { text-align: left; }
+.loc-row .actions { display: flex; align-items: center; gap: 4px; }
 
-/* أزرار صغيرة */
-.btn { 
-  padding: 6px 10px; border-radius: 8px; border: 1px solid #e5e7eb; 
-  background:#0ea5e9; color:#fff; font-weight:600;
-}
-.btn.secondary { background:#f1f5f9; color:#0f172a; }
-.btn.red { background:#ef4444; color:#fff; }
+.divider { height: 1px; background: rgba(0,0,0,0.08); margin: 8px 0; }
+.muted { color: #6b7280; font-size: 12px; }
 
-/* عناصر قائمة */
-.list-item {
-  display:flex; align-items:center; justify-content:space-between;
-  gap:8px; font-size:14px; border:1px solid #e5e7eb; border-radius:8px;
-  padding:6px 8px; background:#fff; margin-bottom:6px;
-}
-
-/* فورم */
-.form-row { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; font-size:14px; }
-.form-row > label { font-weight:600; color:#334155; }
-.form-row input[type="text"],
-.form-row textarea,
-.form-row select {
-  border:1px solid #e5e7eb; border-radius:8px; padding:8px; outline:none;
-}
-.form-row .range { width:100%; }
-.truncate { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* MapLibre popups if used later */
+.maplibregl-popup-content { border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); }
