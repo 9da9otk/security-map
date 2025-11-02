@@ -19,47 +19,46 @@ export const locationsRouter = router({
   
   upsert: procedure
     .input(z.object({
-      id: z.number().optional(),
+      id: z.string().optional(),
       name: z.string().min(1),
-      description: z.string().optional().nullable(),
-      locationType: z.enum(["security", "traffic", "mixed"]),
-      latitude: z.number(),
-      longitude: z.number(),
+      lat: z.number(),
+      lng: z.number(),
       radius: z.number().default(30),
       notes: z.string().optional().nullable(),
+      fillColor: z.string().optional(),
+      fillOpacity: z.number().optional(),
+      strokeColor: z.string().optional(),
+      strokeWidth: z.number().optional(),
+      strokeEnabled: z.boolean().optional(),
     }))
     .mutation(async ({ input }) => {
       const db = await getDb();
       
-      // إذا في id، نسوي update
-      if (input.id) {
+      if (input.id && input.id !== "draft") {
+        const numId = Number(input.id);
         const patch: any = {
           name: input.name,
-          description: input.description ?? null,
-          locationType: input.locationType,
-          latitude: String(input.latitude),
-          longitude: String(input.longitude),
+          latitude: String(input.lat),
+          longitude: String(input.lng),
           radius: input.radius,
           notes: input.notes ?? null,
         };
         
         const [row] = await db.update(locations)
           .set(patch)
-          .where(eq(locations.id, input.id))
+          .where(eq(locations.id, numId))
           .returning();
         return row;
       }
       
-      // إذا ما في id، نسوي insert
       const [row] = await db.insert(locations).values({
         name: input.name,
-        description: input.description ?? null,
-        locationType: input.locationType,
-        latitude: String(input.latitude),
-        longitude: String(input.longitude),
+        latitude: String(input.lat),
+        longitude: String(input.lng),
         radius: input.radius,
         notes: input.notes ?? null,
         isActive: 1,
+        locationType: "security",
       }).returning();
       return row;
     }),
@@ -111,10 +110,11 @@ export const locationsRouter = router({
     }),
   
   delete: procedure
-    .input(z.object({ id: z.number() }))
+    .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
       const db = await getDb();
-      const [row] = await db.delete(locations).where(eq(locations.id, input.id)).returning();
+      const numId = Number(input.id);
+      const [row] = await db.delete(locations).where(eq(locations.id, numId)).returning();
       return row;
     }),
 });
