@@ -1,9 +1,11 @@
-/* يضمن أن الجذر يملأ الشاشة وأنه لا يوجد هوامش تعيق ارتفاع الخريطة */
+/* يضمن الامتداد الكامل للواجهة */
 html, body, #root {
   height: 100%;
   width: 100%;
   margin: 0;
   padding: 0;
 }
-
 * { box-sizing: border-box; }
+
+/* لون خلفية مؤقت للتشخيص */
+body { background: #f8fafc; }
