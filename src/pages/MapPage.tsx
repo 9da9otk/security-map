@@ -1,4 +1,4 @@
-import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,10 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Crosshair, Plus, Save, Trash2 } from "lucide-react";
 import maplibregl, { Map, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import "@/styles/base.css";
 import "@/styles/map.css";
-
-const DEBUG = true; // اجعلها false لإخفاء طبقة الديبَغ
 
 const DIRIYAH_CENTER: [number, number] = [46.5733, 24.7423];
 const DIRIYAH_BOUNDS: [[number, number], [number, number]] = [
@@ -21,10 +18,7 @@ const DIRIYAH_BOUNDS: [[number, number], [number, number]] = [
   [46.5864, 24.7512],
 ];
 
-const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
-const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
-
-interface LocationDTO {
+type LocationDTO = {
   id: string;
   name: string;
   lat: number;
@@ -36,26 +30,37 @@ interface LocationDTO {
   strokeColor?: string | null;
   strokeWidth?: number | null;
   strokeEnabled?: boolean | null;
-}
+};
 
-function baseStyle(): StyleSpecification {
-  const key = (import.meta as any).env?.VITE_MAPTILER_KEY as string | undefined;
+const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
+
+// ———— أسلوب خريطة مضمونة الظهور (فيها خلفية حتى لو تعطلت البلاطات) ————
+function buildStyle(): StyleSpecification {
+  const key = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
+  const background: any = {
+    id: "bg",
+    type: "background",
+    paint: { "background-color": "#eef2ff" } // لون خلفية يظهر حتى بدون بلاطات
+  };
+
   if (key) {
     return {
       version: 8,
       sources: {
-        basemap: {
+        base: {
           type: "raster",
           tiles: [
             `https://api.maptiler.com/tiles/tiles/256/{z}/{x}/{y}.jpg?key=${key}`,
           ],
           tileSize: 256,
-          attribution: "© MapTiler © OpenStreetMap contributors",
+          attribution: "© MapTiler © OpenStreetMap",
         },
       },
-      layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+      layers: [background, { id: "base", type: "raster", source: "base" }],
     } as any;
   }
+
   return {
     version: 8,
     sources: {
@@ -70,7 +75,7 @@ function baseStyle(): StyleSpecification {
         attribution: "© OpenStreetMap",
       },
     },
-    layers: [{ id: "osm", type: "raster", source: "osm" }],
+    layers: [background, { id: "osm", type: "raster", source: "osm" }],
   };
 }
 
@@ -80,14 +85,10 @@ export default function MapPage() {
   const upsertMutation = trpc.locations.upsert.useMutation();
   const deleteMutation = trpc.locations.remove.useMutation();
 
-  // Map refs
+  // Map
   const mapRef = useRef<Map | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const isReadyRef = useRef(false);
-
-  // “جاهز للتهيئة” بعد التأكد من قياس الحاوية
-  const [canInit, setCanInit] = useState(false);
-  const [box, setBox] = useState<{w: number; h: number}>({ w: 0, h: 0 });
+  const mapEl = useRef<HTMLDivElement | null>(null);
+  const readyRef = useRef(false);
 
   // Draft + style
   const [draft, setDraft] = useState<LocationDTO | null>(null);
@@ -98,224 +99,192 @@ export default function MapPage() {
   const [strokeEnabled, setStrokeEnabled] = useState(true);
   const [radiusM, setRadiusM] = useState(60);
 
-  // ===== قياس الحاوية وانتظار حجم > 0 =====
-  useLayoutEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
+  // تحويل متر→بكسل تقريبي لموقع الدرعية
+  function metersToPixels(m: number, z: number) {
+    const lat = DIRIYAH_CENTER[1];
+    const mpp = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, z);
+    return m / mpp;
+  }
 
-    const measure = () => {
-      const r = el.getBoundingClientRect();
-      setBox({ w: Math.round(r.width), h: Math.round(r.height) });
-      if (r.width > 0 && r.height > 0) setCanInit(true);
-    };
+  // ====== تهيئة الخريطة — نسخة مبسّطة للغاية ======
+  useEffect(() => {
+    if (mapRef.current || !mapEl.current) return;
 
-    measure();                        // قياس أولي
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-
-    // احتياط: بعض الواجهات تتأخر في الحساب، نعيد القياس بعد فريم
-    const id = requestAnimationFrame(measure);
-    const id2 = setTimeout(measure, 60);
-
-    return () => {
-      ro.disconnect();
-      cancelAnimationFrame(id);
-      clearTimeout(id2);
-    };
-  }, []);
-
-  // ===== إنشاء الخريطة بعد التأكد من القياس =====
-  useLayoutEffect(() => {
-    if (!canInit || mapRef.current || !containerRef.current) return;
+    // نضمن ارتفاع وعرض للحاوية من داخل المكوّن نفسه
+    mapEl.current.style.minHeight = "100vh";
+    mapEl.current.style.width = "100%";
 
     const map = new maplibregl.Map({
-      container: containerRef.current,
+      container: mapEl.current,
       center: DIRIYAH_CENTER,
       zoom: 14.8,
-      style: baseStyle(),
+      style: buildStyle(),
       attributionControl: true,
-      preserveDrawingBuffer: false,
     });
 
-    map.on("error", (e) => console.error("[maplibre error]", e?.error || e));
-
+    map.on("error", (e) => console.error("[maplibre]", e?.error || e));
     mapRef.current = map;
+
     map.once("load", () => {
-      ensureSourcesAndLayers();
-      isReadyRef.current = true;
-      fitDiriyahOnce();
-      map.resize();           // تأكيد التمدد
-      setTimeout(() => map.resize(), 50);
+      // مصادر/طبقات بسيطة
+      if (!map.getSource("locations-src")) {
+        map.addSource("locations-src", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+          promoteId: "id",
+        });
+      }
+      if (!map.getLayer("locations-points")) {
+        map.addLayer({
+          id: "locations-points",
+          type: "circle",
+          source: "locations-src",
+          paint: {
+            "circle-color": ["coalesce", ["get", "fillColor"], "#118bee"],
+            "circle-radius": 4,
+            "circle-stroke-width": 1,
+            "circle-stroke-color": ["coalesce", ["get", "strokeColor"], "#002255"],
+          },
+        });
+      }
+
+      if (!map.getSource("draft-src")) {
+        map.addSource("draft-src", {
+          type: "geojson",
+          data: { type: "FeatureCollection", features: [] },
+        });
+      }
+      if (!map.getLayer("draft-fill")) {
+        map.addLayer({
+          id: "draft-fill",
+          type: "circle",
+          source: "draft-src",
+          paint: {
+            "circle-color": fillColor,
+            "circle-opacity": fillOpacity,
+            "circle-radius": [
+              "interpolate", ["linear"], ["zoom"],
+              8,  metersToPixels(radiusM, 8),
+              18, metersToPixels(radiusM, 18),
+            ],
+          },
+        });
+      }
+      if (!map.getLayer("draft-line")) {
+        map.addLayer({
+          id: "draft-line",
+          type: "circle",
+          source: "draft-src",
+          paint: {
+            "circle-color": strokeColor,
+            "circle-opacity": strokeEnabled ? 1 : 0,
+            "circle-stroke-color": strokeColor,
+            "circle-stroke-width": strokeEnabled ? strokeWidth : 0,
+            "circle-radius": [
+              "interpolate", ["linear"], ["zoom"],
+              8,  metersToPixels(radiusM, 8) + strokeWidth,
+              18, metersToPixels(radiusM, 18) + strokeWidth,
+            ],
+          },
+        });
+      }
+
+      // إعادة تحجيم مؤكدة
+      map.resize();
+      readyRef.current = true;
+
+      // زر ملاحة للتأكيد البصري
+      map.addControl(new maplibregl.NavigationControl(), "top-left");
+
+      // تأكيد نطاق الدرعية
+      map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, duration: 0 });
     });
 
-    // راقب تغيّر الحجم دومًا
+    // أي تغيّر بحجم الحاوية
     const ro = new ResizeObserver(() => map.resize());
-    ro.observe(containerRef.current);
-    (map as any).__ro = ro;
+    ro.observe(mapEl.current);
 
     return () => {
       ro.disconnect();
       map.remove();
       mapRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canInit]);
+  }, []);
 
-  const fitDiriyahOnce = () => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, pitch: 0, bearing: 0, duration: 0 });
-  };
+  // حفظ/حذف/اختيار مواقع (كما هي)
+  const { mutateAsync: upsert } = upsertMutation;
+  const { mutateAsync: remove } = deleteMutation;
+  const locations: LocationDTO[] = useMemo(() => (data as any) ?? [], [data]);
 
-  // Utilities
-  function metersToPixels(meters: number, zoom: number) {
-    const lat = DIRIYAH_CENTER[1];
-    const metersPerPixel = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
-    return meters / metersPerPixel;
-  }
-
-  function ensureSourcesAndLayers() {
-    const map = mapRef.current!;
-    // saved
-    if (!map.getSource("locations-src")) {
-      map.addSource("locations-src", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-        promoteId: "id",
-      });
-    }
-    if (!map.getLayer("locations-circle")) {
-      map.addLayer({
-        id: "locations-circle",
-        type: "circle",
-        source: "locations-src",
-        paint: {
-          "circle-color": ["coalesce", ["get", "fillColor"], "#118bee"],
-          "circle-radius": 4,
-          "circle-stroke-width": 1,
-          "circle-stroke-color": ["coalesce", ["get", "strokeColor"], "#002255"],
-        },
-      });
-    }
-    // draft
-    if (!map.getSource("draft-src")) {
-      map.addSource("draft-src", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-    }
-    if (!map.getLayer("draft-fill")) {
-      map.addLayer({
-        id: "draft-fill",
-        type: "circle",
-        source: "draft-src",
-        paint: {
-          "circle-color": fillColor,
-          "circle-opacity": fillOpacity,
-          "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            8, metersToPixels(radiusM, 8),
-            18, metersToPixels(radiusM, 18),
-          ],
-        },
-      });
-    }
-    if (!map.getLayer("draft-line")) {
-      map.addLayer({
-        id: "draft-line",
-        type: "circle",
-        source: "draft-src",
-        paint: {
-          "circle-color": strokeColor,
-          "circle-opacity": strokeEnabled ? 1 : 0,
-          "circle-stroke-color": strokeColor,
-          "circle-stroke-width": strokeEnabled ? strokeWidth : 0,
-          "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            8, metersToPixels(radiusM, 8) + strokeWidth,
-            18, metersToPixels(radiusM, 18) + strokeWidth,
-          ],
-        },
-      });
-    }
-  }
-
-  // Saved locations → GeoJSON
   useEffect(() => {
-    if (!isReadyRef.current || !mapRef.current) return;
+    if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
     const fc = {
       type: "FeatureCollection" as const,
-      features: (data ?? []).map((loc: any) => ({
+      features: (locations ?? []).map((l: any) => ({
         type: "Feature" as const,
-        id: loc.id,
+        id: l.id,
         properties: {
-          id: loc.id,
-          name: loc.name,
-          fillColor: loc.fillColor ?? "#118bee",
-          strokeColor: loc.strokeColor ?? "#002255",
+          id: l.id,
+          name: l.name,
+          fillColor: l.fillColor ?? "#118bee",
+          strokeColor: l.strokeColor ?? "#002255",
         },
-        geometry: { type: "Point" as const, coordinates: [loc.lng, loc.lat] },
+        geometry: { type: "Point" as const, coordinates: [l.lng, l.lat] },
       })),
     };
     (map.getSource("locations-src") as any)?.setData(fc);
-  }, [isLoading, data]);
+  }, [isLoading, locations]);
 
-  // Draft GEO (coords/name only)
+  // تحديث GeoJSON للمسودة فقط عند تغيّر الإحداثيات/الاسم
   useEffect(() => {
-    if (!isReadyRef.current || !mapRef.current) return;
+    if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
-    const geo = draft
+    const data = draft
       ? {
           type: "FeatureCollection" as const,
-          features: [
-            {
-              type: "Feature" as const,
-              properties: { name: draft.name || "Draft" },
-              geometry: { type: "Point" as const, coordinates: [draft.lng, draft.lat] },
-            },
-          ],
+          features: [{
+            type: "Feature" as const,
+            properties: { name: draft.name || "Draft" },
+            geometry: { type: "Point" as const, coordinates: [draft.lng, draft.lat] },
+          }],
         }
       : { type: "FeatureCollection", features: [] };
-    (map.getSource("draft-src") as any)?.setData(geo);
+
+    (map.getSource("draft-src") as any)?.setData(data);
   }, [draft?.lat, draft?.lng, draft?.name]);
 
-  // Draft STYLE (via rAF)
+  // تحديث خصائص الرسم عبر setPaintProperty فقط
   useEffect(() => {
-    if (!isReadyRef.current || !mapRef.current) return;
+    if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
-    let raf = 0;
-    const apply = () => {
-      if (map.getLayer("draft-fill")) {
-        map.setPaintProperty("draft-fill", "circle-color", fillColor);
-        map.setPaintProperty("draft-fill", "circle-opacity", clamp(fillOpacity, 0, 1));
-        map.setPaintProperty("draft-fill", "circle-radius", [
-          "interpolate", ["linear"], ["zoom"],
-          8,  metersToPixels(radiusM, 8),
-          18, metersToPixels(radiusM, 18),
-        ]);
-      }
-      if (map.getLayer("draft-line")) {
-        map.setPaintProperty("draft-line", "circle-color", strokeColor);
-        map.setPaintProperty("draft-line", "circle-opacity", strokeEnabled ? 1 : 0);
-        map.setPaintProperty("draft-line", "circle-stroke-color", strokeColor);
-        map.setPaintProperty("draft-line", "circle-stroke-width", strokeEnabled ? strokeWidth : 0);
-        map.setPaintProperty("draft-line", "circle-radius", [
-          "interpolate", ["linear"], ["zoom"],
-          8,  metersToPixels(radiusM, 8) + strokeWidth,
-          18, metersToPixels(radiusM, 18) + strokeWidth,
-        ]);
-      }
-    };
-    raf = requestAnimationFrame(apply);
-    return () => cancelAnimationFrame(raf);
+
+    if (map.getLayer("draft-fill")) {
+      map.setPaintProperty("draft-fill", "circle-color", fillColor);
+      map.setPaintProperty("draft-fill", "circle-opacity", fillOpacity);
+      map.setPaintProperty("draft-fill", "circle-radius", [
+        "interpolate", ["linear"], ["zoom"],
+        8,  metersToPixels(radiusM, 8),
+        18, metersToPixels(radiusM, 18),
+      ]);
+    }
+    if (map.getLayer("draft-line")) {
+      map.setPaintProperty("draft-line", "circle-color", strokeColor);
+      map.setPaintProperty("draft-line", "circle-opacity", strokeEnabled ? 1 : 0);
+      map.setPaintProperty("draft-line", "circle-stroke-color", strokeColor);
+      map.setPaintProperty("draft-line", "circle-stroke-width", strokeEnabled ? strokeWidth : 0);
+      map.setPaintProperty("draft-line", "circle-radius", [
+        "interpolate", ["linear"], ["zoom"],
+        8,  metersToPixels(radiusM, 8) + strokeWidth,
+        18, metersToPixels(radiusM, 18) + strokeWidth,
+      ]);
+    }
   }, [fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled, radiusM]);
 
-  // Actions
   const handleNew = () => {
     const map = mapRef.current!;
     const c = map.getCenter();
-    const d: LocationDTO = {
+    setDraft({
       id: "draft",
       name: "New Location",
       lat: c.lat,
@@ -327,32 +296,27 @@ export default function MapPage() {
       strokeColor,
       strokeWidth,
       strokeEnabled,
-    };
-    setDraft(d);
+    });
   };
 
   const handleSave = async () => {
     if (!draft) return;
-    await upsertMutation.mutateAsync({
+    await upsert({
       id: draft.id === "draft" ? undefined : draft.id,
       name: draft.name,
       lat: draft.lat,
       lng: draft.lng,
       radius: radiusM,
       notes: draft.notes ?? "",
-      fillColor,
-      fillOpacity,
-      strokeColor,
-      strokeWidth,
-      strokeEnabled,
+      fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled,
     });
     setDraft(null);
     await refetch();
   };
 
   const handleDelete = async (id: string) => {
-    await deleteMutation.mutateAsync({ id });
-    if (draft && draft.id === id) setDraft(null);
+    await remove({ id });
+    if (draft?.id === id) setDraft(null);
     await refetch();
   };
 
@@ -366,47 +330,33 @@ export default function MapPage() {
     setStrokeEnabled(loc.strokeEnabled ?? true);
   };
 
-  const locations: LocationDTO[] = useMemo(() => (data as any) ?? [], [data]);
-
   return (
-    <div className="map-page">
-      {/* العمود الأيسر = الخريطة */}
-      <div className="map-container" ref={containerRef}>
-        {DEBUG && (
-          <div className="debug-overlay">
-            <b>Container:</b> {box.w} × {box.h}px {canInit ? "✅" : "⏳"}
-          </div>
-        )}
+    <div className="map-page flex-layout">
+      {/* الخريطة يسار */}
+      <div className="map-left">
+        <div ref={mapEl} className="map-canvas" />
         <div className="map-toolbar">
-          <Button onClick={handleNew} size="sm">
-            <Plus className="mr-1 h-4 w-4" /> موقع جديد
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => fitDiriyahOnce()}>
+          <Button onClick={handleNew} size="sm"><Plus className="mr-1 h-4 w-4" /> موقع جديد</Button>
+          <Button variant="secondary" size="sm" onClick={() => mapRef.current?.fitBounds(DIRIYAH_BOUNDS, {padding:40, duration:0})}>
             <Crosshair className="mr-1 h-4 w-4" /> نطاق الدرعية
           </Button>
         </div>
       </div>
 
-      {/* العمود الأيمن = اللوحة */}
-      <Card className="map-sidebar">
-        <CardHeader>
-          <CardTitle>التحكم</CardTitle>
-        </CardHeader>
+      {/* اللوحة يمين */}
+      <Card className="map-right">
+        <CardHeader><CardTitle>التحكم</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div>
             <Label>المواقع</Label>
             <div className="locations-list">
               {isLoading && <div className="muted">Loading…</div>}
-              {!isLoading && locations.length === 0 && <div className="muted">لا توجد مواقع</div>}
-              {locations.map((l) => (
+              {!isLoading && (data?.length ?? 0) === 0 && <div className="muted">لا توجد مواقع</div>}
+              {(data ?? []).map((l: any) => (
                 <div key={l.id} className={`loc-row ${draft?.id === l.id ? "active" : ""}`}>
-                  <button onClick={() => selectExisting(l)} title="تعديل">
-                    {l.name}
-                  </button>
+                  <button onClick={() => selectExisting(l)}>{l.name}</button>
                   <div className="actions">
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(l.id)} title="حذف">
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleDelete(l.id)} title="حذف"><Trash2 className="h-4 w-4" /></Button>
                   </div>
                 </div>
               ))}
@@ -417,50 +367,28 @@ export default function MapPage() {
 
           <div className="grid grid-cols-2 gap-2 items-center">
             <Label>الاسم</Label>
-            <Input
-              value={draft?.name ?? ""}
-              placeholder="اسم الموقع"
-              onChange={(e) => draft && setDraft({ ...draft, name: e.target.value })}
-              disabled={!draft}
-            />
+            <Input value={draft?.name ?? ""} onChange={(e)=>draft&&setDraft({...draft, name:e.target.value})} disabled={!draft} placeholder="اسم الموقع" />
 
             <Label>الملاحظات</Label>
-            <Textarea
-              value={draft?.notes ?? ""}
-              placeholder="ملاحظات"
-              onChange={(e) => draft && setDraft({ ...draft, notes: e.target.value })}
-              disabled={!draft}
-            />
+            <Textarea value={draft?.notes ?? ""} onChange={(e)=>draft&&setDraft({...draft, notes:e.target.value})} disabled={!draft} placeholder="ملاحظات" />
 
             <Label>خط العرض</Label>
-            <Input
-              type="number"
-              step="0.000001"
-              value={draft ? toFixed(draft.lat) : ""}
-              onChange={(e) => draft && setDraft({ ...draft, lat: Number(e.target.value) })}
-              disabled={!draft}
-            />
+            <Input type="number" step="0.000001" value={draft?toFixed(draft.lat):""} onChange={(e)=>draft&&setDraft({...draft, lat:Number(e.target.value)})} disabled={!draft} />
 
             <Label>خط الطول</Label>
-            <Input
-              type="number"
-              step="0.000001"
-              value={draft ? toFixed(draft.lng) : ""}
-              onChange={(e) => draft && setDraft({ ...draft, lng: Number(e.target.value) })}
-              disabled={!draft}
-            />
+            <Input type="number" step="0.000001" value={draft?toFixed(draft.lng):""} onChange={(e)=>draft&&setDraft({...draft, lng:Number(e.target.value)})} disabled={!draft} />
 
             <Label>نصف القطر (م)</Label>
             <div className="flex items-center gap-2">
-              <Slider value={[radiusM]} min={5} max={500} step={1} onValueChange={(v) => setRadiusM(v[0])} disabled={!draft} />
-              <Input className="w-20" type="number" value={radiusM} onChange={(e) => setRadiusM(clamp(Number(e.target.value), 1, 1000))} disabled={!draft} />
+              <Slider value={[radiusM]} min={5} max={500} step={1} onValueChange={(v)=>setRadiusM(v[0])} disabled={!draft} />
+              <Input className="w-20" type="number" value={radiusM} onChange={(e)=>setRadiusM(clamp(Number(e.target.value),1,1000))} disabled={!draft} />
             </div>
 
             <Label>لون التعبئة</Label>
-            <Input type="color" value={fillColor} onChange={(e) => setFillColor(e.target.value)} disabled={!draft} />
+            <Input type="color" value={fillColor} onChange={(e)=>setFillColor(e.target.value)} disabled={!draft} />
 
             <Label>شفافية التعبئة</Label>
-            <Slider value={[Math.round(fillOpacity * 100)]} min={0} max={100} step={1} onValueChange={(v) => setFillOpacity(v[0] / 100)} disabled={!draft} />
+            <Slider value={[Math.round(fillOpacity*100)]} min={0} max={100} step={1} onValueChange={(v)=>setFillOpacity(v[0]/100)} disabled={!draft} />
 
             <div className="col-span-2 grid grid-cols-2 gap-2 items-center">
               <Label>إظهار الحدود</Label>
@@ -468,19 +396,17 @@ export default function MapPage() {
             </div>
 
             <Label>لون الحدود</Label>
-            <Input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} disabled={!draft} />
+            <Input type="color" value={strokeColor} onChange={(e)=>setStrokeColor(e.target.value)} disabled={!draft} />
 
             <Label>سُمك الحدود</Label>
-            <Slider value={[strokeWidth]} min={0} max={20} step={1} onValueChange={(v) => setStrokeWidth(v[0])} disabled={!draft} />
+            <Slider value={[strokeWidth]} min={0} max={20} step={1} onValueChange={(v)=>setStrokeWidth(v[0])} disabled={!draft} />
           </div>
 
           <div className="flex gap-2 pt-2">
-            <Button onClick={handleSave} disabled={!draft}>
+            <Button onClick={async()=>{ if(!draft) return; await upsert({ id:draft.id==="draft"?undefined:draft.id, name:draft.name, lat:draft.lat, lng:draft.lng, radius:radiusM, notes:draft.notes??"", fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled }); setDraft(null); await refetch(); }} disabled={!draft}>
               <Save className="mr-1 h-4 w-4" /> حفظ
             </Button>
-            <Button variant="outline" onClick={() => setDraft(null)} disabled={!draft}>
-              إلغاء
-            </Button>
+            <Button variant="outline" onClick={()=>setDraft(null)} disabled={!draft}>إلغاء</Button>
           </div>
         </CardContent>
       </Card>
