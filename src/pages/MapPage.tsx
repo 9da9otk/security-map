@@ -36,30 +36,6 @@ const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(ma
 const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
 
 function buildStyle(): StyleSpecification {
-  const key = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
-  const background: any = {
-    id: "bg",
-    type: "background",
-    paint: { "background-color": "#eef2ff" }
-  };
-
-  if (key) {
-    return {
-      version: 8,
-      sources: {
-        base: {
-          type: "raster",
-          tiles: [
-            `https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=${key}`,
-          ],
-          tileSize: 256,
-          attribution: "© MapTiler © OpenStreetMap",
-        },
-      },
-      layers: [background, { id: "base", type: "raster", source: "base" }],
-    } as any;
-  }
-
   return {
     version: 8,
     sources: {
@@ -71,10 +47,23 @@ function buildStyle(): StyleSpecification {
           "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
         ],
         tileSize: 256,
-        attribution: "© OpenStreetMap",
+        attribution: "© OpenStreetMap contributors",
       },
     },
-    layers: [background, { id: "osm", type: "raster", source: "osm" }],
+    layers: [
+      {
+        id: "background",
+        type: "background",
+        paint: { "background-color": "#f0f0f0" },
+      },
+      {
+        id: "osm-tiles",
+        type: "raster",
+        source: "osm",
+        minzoom: 0,
+        maxzoom: 22,
+      },
+    ],
   };
 }
 
