@@ -35,13 +35,12 @@ type LocationDTO = {
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
 
-// ———— أسلوب خريطة مضمونة الظهور (فيها خلفية حتى لو تعطلت البلاطات) ————
 function buildStyle(): StyleSpecification {
   const key = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
   const background: any = {
     id: "bg",
     type: "background",
-    paint: { "background-color": "#eef2ff" } // لون خلفية يظهر حتى بدون بلاطات
+    paint: { "background-color": "#eef2ff" }
   };
 
   if (key) {
@@ -51,7 +50,7 @@ function buildStyle(): StyleSpecification {
         base: {
           type: "raster",
           tiles: [
-            `https://api.maptiler.com/tiles/tiles/256/{z}/{x}/{y}.jpg?key=${key}`,
+            `https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=${key}`,
           ],
           tileSize: 256,
           attribution: "© MapTiler © OpenStreetMap",
@@ -80,17 +79,14 @@ function buildStyle(): StyleSpecification {
 }
 
 export default function MapPage() {
-  // API
   const { data, isLoading, refetch } = trpc.locations.list.useQuery();
   const upsertMutation = trpc.locations.upsert.useMutation();
-  const deleteMutation = trpc.locations.remove.useMutation();
+  const deleteMutation = trpc.locations.delete.useMutation();
 
-  // Map
   const mapRef = useRef<Map | null>(null);
   const mapEl = useRef<HTMLDivElement | null>(null);
   const readyRef = useRef(false);
 
-  // Draft + style
   const [draft, setDraft] = useState<LocationDTO | null>(null);
   const [fillColor, setFillColor] = useState("#0066ff");
   const [fillOpacity, setFillOpacity] = useState(0.25);
@@ -99,18 +95,15 @@ export default function MapPage() {
   const [strokeEnabled, setStrokeEnabled] = useState(true);
   const [radiusM, setRadiusM] = useState(60);
 
-  // تحويل متر→بكسل تقريبي لموقع الدرعية
   function metersToPixels(m: number, z: number) {
     const lat = DIRIYAH_CENTER[1];
     const mpp = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, z);
     return m / mpp;
   }
 
-  // ====== تهيئة الخريطة — نسخة مبسّطة للغاية ======
   useEffect(() => {
     if (mapRef.current || !mapEl.current) return;
 
-    // نضمن ارتفاع وعرض للحاوية من داخل المكوّن نفسه
     mapEl.current.style.minHeight = "100vh";
     mapEl.current.style.width = "100%";
 
@@ -126,7 +119,6 @@ export default function MapPage() {
     mapRef.current = map;
 
     map.once("load", () => {
-      // مصادر/طبقات بسيطة
       if (!map.getSource("locations-src")) {
         map.addSource("locations-src", {
           type: "geojson",
@@ -189,18 +181,13 @@ export default function MapPage() {
         });
       }
 
-      // إعادة تحجيم مؤكدة
       map.resize();
       readyRef.current = true;
 
-      // زر ملاحة للتأكيد البصري
       map.addControl(new maplibregl.NavigationControl(), "top-left");
-
-      // تأكيد نطاق الدرعية
       map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, duration: 0 });
     });
 
-    // أي تغيّر بحجم الحاوية
     const ro = new ResizeObserver(() => map.resize());
     ro.observe(mapEl.current);
 
@@ -211,7 +198,6 @@ export default function MapPage() {
     };
   }, []);
 
-  // حفظ/حذف/اختيار مواقع (كما هي)
   const { mutateAsync: upsert } = upsertMutation;
   const { mutateAsync: remove } = deleteMutation;
   const locations: LocationDTO[] = useMemo(() => (data as any) ?? [], [data]);
@@ -230,13 +216,12 @@ export default function MapPage() {
           fillColor: l.fillColor ?? "#118bee",
           strokeColor: l.strokeColor ?? "#002255",
         },
-        geometry: { type: "Point" as const, coordinates: [l.lng, l.lat] },
+        geometry: { type: "Point" as const, coordinates: [Number(l.longitude), Number(l.latitude)] },
       })),
     };
     (map.getSource("locations-src") as any)?.setData(fc);
   }, [isLoading, locations]);
 
-  // تحديث GeoJSON للمسودة فقط عند تغيّر الإحداثيات/الاسم
   useEffect(() => {
     if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -254,7 +239,6 @@ export default function MapPage() {
     (map.getSource("draft-src") as any)?.setData(data);
   }, [draft?.lat, draft?.lng, draft?.name]);
 
-  // تحديث خصائص الرسم عبر setPaintProperty فقط
   useEffect(() => {
     if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -320,8 +304,15 @@ export default function MapPage() {
     await refetch();
   };
 
-  const selectExisting = (loc: LocationDTO) => {
-    setDraft({ ...loc });
+  const selectExisting = (loc: any) => {
+    setDraft({
+      id: String(loc.id),
+      name: loc.name,
+      lat: Number(loc.latitude),
+      lng: Number(loc.longitude),
+      radius: loc.radius ?? 60,
+      notes: loc.notes,
+    });
     setRadiusM(loc.radius ?? 60);
     setFillColor(loc.fillColor ?? "#0066ff");
     setFillOpacity(loc.fillOpacity ?? 0.25);
@@ -332,7 +323,6 @@ export default function MapPage() {
 
   return (
     <div className="map-page flex-layout">
-      {/* الخريطة يسار */}
       <div className="map-left">
         <div ref={mapEl} className="map-canvas" />
         <div className="map-toolbar">
@@ -343,7 +333,6 @@ export default function MapPage() {
         </div>
       </div>
 
-      {/* اللوحة يمين */}
       <Card className="map-right">
         <CardHeader><CardTitle>التحكم</CardTitle></CardHeader>
         <CardContent className="space-y-4">
@@ -353,10 +342,10 @@ export default function MapPage() {
               {isLoading && <div className="muted">Loading…</div>}
               {!isLoading && (data?.length ?? 0) === 0 && <div className="muted">لا توجد مواقع</div>}
               {(data ?? []).map((l: any) => (
-                <div key={l.id} className={`loc-row ${draft?.id === l.id ? "active" : ""}`}>
+                <div key={l.id} className={`loc-row ${draft?.id === String(l.id) ? "active" : ""}`}>
                   <button onClick={() => selectExisting(l)}>{l.name}</button>
                   <div className="actions">
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(l.id)} title="حذف"><Trash2 className="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleDelete(String(l.id))} title="حذف"><Trash2 className="h-4 w-4" /></Button>
                   </div>
                 </div>
               ))}
@@ -403,7 +392,7 @@ export default function MapPage() {
           </div>
 
           <div className="flex gap-2 pt-2">
-            <Button onClick={async()=>{ if(!draft) return; await upsert({ id:draft.id==="draft"?undefined:draft.id, name:draft.name, lat:draft.lat, lng:draft.lng, radius:radiusM, notes:draft.notes??"", fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled }); setDraft(null); await refetch(); }} disabled={!draft}>
+            <Button onClick={handleSave} disabled={!draft}>
               <Save className="mr-1 h-4 w-4" /> حفظ
             </Button>
             <Button variant="outline" onClick={()=>setDraft(null)} disabled={!draft}>إلغاء</Button>
