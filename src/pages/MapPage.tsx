@@ -12,20 +12,15 @@ import maplibregl, { Map } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "@/styles/map.css";
 
-// ===============================
-// Diriyah default camera & bounds
-// ===============================
 const DIRIYAH_CENTER: [number, number] = [46.5733, 24.7423];
 const DIRIYAH_BOUNDS: [[number, number], [number, number]] = [
-  [46.5598, 24.7328], // SW
-  [46.5864, 24.7512], // NE
+  [46.5598, 24.7328],
+  [46.5864, 24.7512],
 ];
 
-// Utils
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
 
-// API type (simple)
 interface LocationDTO {
   id: string;
   name: string;
@@ -41,20 +36,16 @@ interface LocationDTO {
 }
 
 export default function MapPage() {
-  // ---- tRPC
   const { data, isLoading, refetch } = trpc.locations.list.useQuery();
   const upsertMutation = trpc.locations.upsert.useMutation();
   const deleteMutation = trpc.locations.remove.useMutation();
 
-  // ---- Map refs
   const mapRef = useRef<Map | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isReadyRef = useRef(false);
 
-  // ---- Draft state (current editing item)
   const [draft, setDraft] = useState<LocationDTO | null>(null);
 
-  // ---- Style live controls (apply to draft layers only)
   const [fillColor, setFillColor] = useState("#0066ff");
   const [fillOpacity, setFillOpacity] = useState(0.25);
   const [strokeColor, setStrokeColor] = useState("#001533");
@@ -62,16 +53,12 @@ export default function MapPage() {
   const [strokeEnabled, setStrokeEnabled] = useState(true);
   const [radiusM, setRadiusM] = useState(60);
 
-  // ===============================
-  // Helpers
-  // ===============================
   const fitDiriyahOnce = () => {
     const map = mapRef.current;
     if (!map) return;
     map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, pitch: 0, bearing: 0, duration: 0 });
   };
 
-  // meters -> pixels approximation for Diriyah latitude
   function metersToPixels(meters: number, zoom: number) {
     const lat = DIRIYAH_CENTER[1];
     const metersPerPixel = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
@@ -80,7 +67,6 @@ export default function MapPage() {
 
   const ensureSourcesAndLayers = () => {
     const map = mapRef.current!;
-    // Saved locations
     if (!map.getSource("locations-src")) {
       map.addSource("locations-src", {
         type: "geojson",
@@ -102,7 +88,6 @@ export default function MapPage() {
       });
     }
 
-    // Draft
     if (!map.getSource("draft-src")) {
       map.addSource("draft-src", {
         type: "geojson",
@@ -149,11 +134,10 @@ export default function MapPage() {
     }
   };
 
-  // ===============================
-  // Map init (once)
-  // ===============================
+  // ===== Map init (grid layout friendly) =====
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return;
+
     const map = new maplibregl.Map({
       container: containerRef.current,
       center: DIRIYAH_CENTER,
@@ -177,31 +161,36 @@ export default function MapPage() {
       attributionControl: true,
     });
 
+    map.on("error", (e) => {
+      // يساعدك لو فيه خطأ CORS/Network
+      console.error("[maplibre error]", e?.error || e);
+    });
+
     mapRef.current = map;
     map.once("load", () => {
       ensureSourcesAndLayers();
       isReadyRef.current = true;
       fitDiriyahOnce();
+
+      // resize safeguard بعد التحميل مباشرة
+      map.resize();
+      setTimeout(() => map.resize(), 50);
     });
 
-    // throttle resize
-    let resizeRaf = 0;
-    const onResize = () => {
-      cancelAnimationFrame(resizeRaf);
-      resizeRaf = requestAnimationFrame(() => map.resize());
-    };
-    window.addEventListener("resize", onResize);
+    // مراقبة حجم الحاوية (Grid/Flex/Sidebar)
+    const ro = new ResizeObserver(() => {
+      map.resize();
+    });
+    ro.observe(containerRef.current);
 
     return () => {
-      window.removeEventListener("resize", onResize);
+      ro.disconnect();
       map.remove();
       mapRef.current = null;
     };
   }, []);
 
-  // ===============================
-  // Saved locations → GeoJSON (no camera jump)
-  // ===============================
+  // ===== Saved locations → GeoJSON =====
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -220,11 +209,9 @@ export default function MapPage() {
       })),
     };
     (map.getSource("locations-src") as any)?.setData(fc);
-  }, [isLoading]); // تحديث واحد بعد اكتمال الجلب
+  }, [isLoading]);
 
-  // ===============================
-  // Draft GEO (only on coords/name)
-  // ===============================
+  // ===== Draft GEO (coords/name only) =====
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -244,9 +231,7 @@ export default function MapPage() {
     (map.getSource("draft-src") as any)?.setData(geo);
   }, [draft?.lat, draft?.lng, draft?.name]);
 
-  // ===============================
-  // Draft STYLE (debounced by rAF)
-  // ===============================
+  // ===== Draft STYLE (debounced via rAF) =====
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -281,9 +266,7 @@ export default function MapPage() {
     return () => cancelAnimationFrame(raf);
   }, [fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled, radiusM]);
 
-  // ===============================
-  // Actions
-  // ===============================
+  // ===== Actions =====
   const handleNew = () => {
     const map = mapRef.current!;
     const c = map.getCenter();
@@ -340,22 +323,21 @@ export default function MapPage() {
 
   const locations: LocationDTO[] = useMemo(() => (data as any) ?? [], [data]);
 
-  // ===============================
-  // UI
-  // ===============================
   return (
     <div className="map-page">
-      <div className="map-toolbar">
-        <Button onClick={handleNew} size="sm">
-          <Plus className="mr-1 h-4 w-4" /> موقع جديد
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => fitDiriyahOnce()}>
-          <Crosshair className="mr-1 h-4 w-4" /> نطاق الدرعية
-        </Button>
+      {/* العمود الأيسر = الخريطة */}
+      <div className="map-container" ref={containerRef}>
+        <div className="map-toolbar">
+          <Button onClick={handleNew} size="sm">
+            <Plus className="mr-1 h-4 w-4" /> موقع جديد
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => fitDiriyahOnce()}>
+            <Crosshair className="mr-1 h-4 w-4" /> نطاق الدرعية
+          </Button>
+        </div>
       </div>
 
-      <div ref={containerRef} className="map-container" />
-
+      {/* العمود الأيمن = الشريط الجانبي */}
       <Card className="map-sidebar">
         <CardHeader>
           <CardTitle>التحكم</CardTitle>
@@ -372,12 +354,7 @@ export default function MapPage() {
                     {l.name}
                   </button>
                   <div className="actions">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleDelete(l.id)}
-                      title="حذف"
-                    >
+                    <Button variant="ghost" size="icon" onClick={() => handleDelete(l.id)} title="حذف">
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
@@ -425,14 +402,7 @@ export default function MapPage() {
 
             <Label>نصف القطر (م)</Label>
             <div className="flex items-center gap-2">
-              <Slider
-                value={[radiusM]}
-                min={5}
-                max={500}
-                step={1}
-                onValueChange={(v) => setRadiusM(v[0])}
-                disabled={!draft}
-              />
+              <Slider value={[radiusM]} min={5} max={500} step={1} onValueChange={(v) => setRadiusM(v[0])} disabled={!draft} />
               <Input
                 className="w-20"
                 type="number"
@@ -446,14 +416,7 @@ export default function MapPage() {
             <Input type="color" value={fillColor} onChange={(e) => setFillColor(e.target.value)} disabled={!draft} />
 
             <Label>شفافية التعبئة</Label>
-            <Slider
-              value={[Math.round(fillOpacity * 100)]}
-              min={0}
-              max={100}
-              step={1}
-              onValueChange={(v) => setFillOpacity(v[0] / 100)}
-              disabled={!draft}
-            />
+            <Slider value={[Math.round(fillOpacity * 100)]} min={0} max={100} step={1} onValueChange={(v) => setFillOpacity(v[0] / 100)} disabled={!draft} />
 
             <div className="col-span-2 grid grid-cols-2 gap-2 items-center">
               <Label>إظهار الحدود</Label>
@@ -464,14 +427,7 @@ export default function MapPage() {
             <Input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} disabled={!draft} />
 
             <Label>سُمك الحدود</Label>
-            <Slider
-              value={[strokeWidth]}
-              min={0}
-              max={20}
-              step={1}
-              onValueChange={(v) => setStrokeWidth(v[0])}
-              disabled={!draft}
-            />
+            <Slider value={[strokeWidth]} min={0} max={20} step={1} onValueChange={(v) => setStrokeWidth(v[0])} disabled={!draft} />
           </div>
 
           <div className="flex gap-2 pt-2">
