@@ -1,34 +1,27 @@
-/* Grid: الخريطة يسار – اللوحة يمين */
-.map-page {
-  display: grid;
-  grid-template-columns: 1fr 380px;
+/* تخطيط بسيط جداً: flex */
+.map-page.flex-layout {
+  display: flex;
   width: 100%;
-  height: 100%;
-  min-height: 100%;
-  position: relative;
+  height: 100vh;           /* ضمان الارتفاع داخل الصفحة نفسها */
   overflow: hidden;
 }
 
-/* الخريطة تملأ عمودها تماماً */
-.map-container {
+/* يسار: الخريطة */
+.map-left {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;            /* يمنع انكماش الكانفاس */
+  height: 100%;
+}
+
+/* عنصر الكانفاس للخريطة */
+.map-canvas {
   position: relative;
   width: 100%;
   height: 100%;
-  z-index: 1;
-  /* خلفية تشخيصية مؤقتة - احذفها لاحقاً */
-  background: repeating-conic-gradient(#f1f5f9 0% 25%, #e2e8f0 0% 50%) 50% / 20px 20px;
 }
 
-/* طبقة كانفاس MapLibre */
-.map-container .maplibregl-canvas,
-.map-container .maplibregl-canvas-container {
-  position: absolute !important;
-  inset: 0 !important;
-  width: 100% !important;
-  height: 100% !important;
-}
-
-/* شريط الأدوات فوق الخريطة */
+/* أدوات فوق الخريطة */
 .map-toolbar {
   position: absolute;
   top: 10px;
@@ -38,37 +31,21 @@
   gap: 8px;
 }
 
-/* اللوحة اليمنى */
-.map-sidebar {
-  grid-column: 2;
-  width: 100%;
+/* يمين: اللوحة */
+.map-right {
+  width: 380px;
   height: 100%;
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(6px);
   border-left: 1px solid #e5e7eb;
-  z-index: 20;
+  background: rgba(255,255,255,0.96);
 }
 
 /* قائمة المواقع */
-.locations-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.loc-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.55); }
-.loc-row.active { outline: 2px solid rgba(17,139,238,0.6); }
-.loc-row button { text-align: left; }
-.loc-row .actions { display: flex; align-items: center; gap: 4px; }
+.locations-list { display:flex; flex-direction:column; gap:6px; margin-top:6px; }
+.loc-row { display:flex; align-items:center; justify-content:space-between; padding:6px 8px; border-radius:10px; background:rgba(255,255,255,0.55); }
+.loc-row.active { outline:2px solid rgba(17,139,238,0.6); }
+.loc-row button { text-align:left; }
+.loc-row .actions { display:flex; align-items:center; gap:4px; }
 
-.divider { height: 1px; background: rgba(0,0,0,0.08); margin: 8px 0; }
-.muted { color: #6b7280; font-size: 12px; }
-
-/* طبقة ديبَغ */
-.debug-overlay {
-  position: absolute;
-  bottom: 10px;
-  left: 10px;
-  z-index: 12;
-  padding: 6px 8px;
-  font-size: 12px;
-  background: rgba(0,0,0,0.6);
-  color: #fff;
-  border-radius: 8px;
-}
+.divider { height:1px; background:rgba(0,0,0,0.08); margin:8px 0; }
+.muted { color:#6b7280; font-size:12px; }
