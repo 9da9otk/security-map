@@ -1,17 +1,67 @@
-/* Basic responsive layout */
-.map-page { position: relative; height: calc(100vh - 70px); }
-.map-toolbar { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; gap: 8px; }
-.map-container { position: absolute; inset: 0; }
-.map-sidebar { position: absolute; top: 10px; right: 10px; width: 360px; max-height: calc(100vh - 20px); overflow: auto; z-index: 6; }
+/* Page takes full screen */
+.map-page {
+  position: relative;
+  width: 100%;
+  height: 100vh; /* ثابت ومستقر */
+  overflow: hidden;
+}
 
-.locations-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-.loc-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,0.55); }
-.loc-row.active { outline: 2px solid rgba(17,139,238,0.6); }
+/* Map behind everything */
+.map-container {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+/* Toolbar above map */
+.map-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+}
+
+/* Sidebar fixed on the right */
+.map-sidebar {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 380px;
+  height: 100vh;
+  z-index: 20;
+  overflow-y: auto;
+  background: rgba(255,255,255,0.95);
+  backdrop-filter: blur(6px);
+  border-left: 1px solid #e5e7eb;
+}
+
+/* Locations list styling */
+.locations-list { 
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.loc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.55);
+}
+
+.loc-row.active {
+  outline: 2px solid rgba(17,139,238,0.6);
+}
+
 .loc-row button { text-align: left; }
 .loc-row .actions { display: flex; align-items: center; gap: 4px; }
 
 .divider { height: 1px; background: rgba(0,0,0,0.08); margin: 8px 0; }
 .muted { color: #6b7280; font-size: 12px; }
-
-/* MapLibre popups if used later */
-.maplibregl-popup-content { border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); }
