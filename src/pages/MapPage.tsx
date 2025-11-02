@@ -13,6 +13,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "@/styles/base.css";
 import "@/styles/map.css";
 
+const DEBUG = true; // اجعلها false لإخفاء طبقة الديبَغ
+
 const DIRIYAH_CENTER: [number, number] = [46.5733, 24.7423];
 const DIRIYAH_BOUNDS: [[number, number], [number, number]] = [
   [46.5598, 24.7328],
@@ -36,29 +38,24 @@ interface LocationDTO {
   strokeEnabled?: boolean | null;
 }
 
-function buildBaseStyle(): StyleSpecification {
-  const key = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
-
+function baseStyle(): StyleSpecification {
+  const key = (import.meta as any).env?.VITE_MAPTILER_KEY as string | undefined;
   if (key) {
-    // MapTiler (أنيق وسريع)
     return {
       version: 8,
       sources: {
-        "basemap": {
+        basemap: {
           type: "raster",
           tiles: [
             `https://api.maptiler.com/tiles/tiles/256/{z}/{x}/{y}.jpg?key=${key}`,
           ],
           tileSize: 256,
-          attribution:
-            "© MapTiler © OpenStreetMap contributors",
+          attribution: "© MapTiler © OpenStreetMap contributors",
         },
       },
       layers: [{ id: "basemap", type: "raster", source: "basemap" }],
     } as any;
   }
-
-  // Fallback إلى OSM
   return {
     version: 8,
     sources: {
@@ -78,16 +75,22 @@ function buildBaseStyle(): StyleSpecification {
 }
 
 export default function MapPage() {
+  // API
   const { data, isLoading, refetch } = trpc.locations.list.useQuery();
   const upsertMutation = trpc.locations.upsert.useMutation();
   const deleteMutation = trpc.locations.remove.useMutation();
 
+  // Map refs
   const mapRef = useRef<Map | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isReadyRef = useRef(false);
 
-  const [draft, setDraft] = useState<LocationDTO | null>(null);
+  // “جاهز للتهيئة” بعد التأكد من قياس الحاوية
+  const [canInit, setCanInit] = useState(false);
+  const [box, setBox] = useState<{w: number; h: number}>({ w: 0, h: 0 });
 
+  // Draft + style
+  const [draft, setDraft] = useState<LocationDTO | null>(null);
   const [fillColor, setFillColor] = useState("#0066ff");
   const [fillOpacity, setFillOpacity] = useState(0.25);
   const [strokeColor, setStrokeColor] = useState("#001533");
@@ -95,21 +98,85 @@ export default function MapPage() {
   const [strokeEnabled, setStrokeEnabled] = useState(true);
   const [radiusM, setRadiusM] = useState(60);
 
+  // ===== قياس الحاوية وانتظار حجم > 0 =====
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setBox({ w: Math.round(r.width), h: Math.round(r.height) });
+      if (r.width > 0 && r.height > 0) setCanInit(true);
+    };
+
+    measure();                        // قياس أولي
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+
+    // احتياط: بعض الواجهات تتأخر في الحساب، نعيد القياس بعد فريم
+    const id = requestAnimationFrame(measure);
+    const id2 = setTimeout(measure, 60);
+
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(id);
+      clearTimeout(id2);
+    };
+  }, []);
+
+  // ===== إنشاء الخريطة بعد التأكد من القياس =====
+  useLayoutEffect(() => {
+    if (!canInit || mapRef.current || !containerRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      center: DIRIYAH_CENTER,
+      zoom: 14.8,
+      style: baseStyle(),
+      attributionControl: true,
+      preserveDrawingBuffer: false,
+    });
+
+    map.on("error", (e) => console.error("[maplibre error]", e?.error || e));
+
+    mapRef.current = map;
+    map.once("load", () => {
+      ensureSourcesAndLayers();
+      isReadyRef.current = true;
+      fitDiriyahOnce();
+      map.resize();           // تأكيد التمدد
+      setTimeout(() => map.resize(), 50);
+    });
+
+    // راقب تغيّر الحجم دومًا
+    const ro = new ResizeObserver(() => map.resize());
+    ro.observe(containerRef.current);
+    (map as any).__ro = ro;
+
+    return () => {
+      ro.disconnect();
+      map.remove();
+      mapRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canInit]);
+
   const fitDiriyahOnce = () => {
     const map = mapRef.current;
     if (!map) return;
     map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, pitch: 0, bearing: 0, duration: 0 });
   };
 
+  // Utilities
   function metersToPixels(meters: number, zoom: number) {
     const lat = DIRIYAH_CENTER[1];
     const metersPerPixel = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
     return meters / metersPerPixel;
   }
 
-  const ensureSourcesAndLayers = () => {
+  function ensureSourcesAndLayers() {
     const map = mapRef.current!;
-    // Saved locations
+    // saved
     if (!map.getSource("locations-src")) {
       map.addSource("locations-src", {
         type: "geojson",
@@ -130,15 +197,13 @@ export default function MapPage() {
         },
       });
     }
-
-    // Draft src
+    // draft
     if (!map.getSource("draft-src")) {
       map.addSource("draft-src", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
     }
-    // Draft fill
     if (!map.getLayer("draft-fill")) {
       map.addLayer({
         id: "draft-fill",
@@ -149,13 +214,12 @@ export default function MapPage() {
           "circle-opacity": fillOpacity,
           "circle-radius": [
             "interpolate", ["linear"], ["zoom"],
-            8,  metersToPixels(radiusM, 8),
+            8, metersToPixels(radiusM, 8),
             18, metersToPixels(radiusM, 18),
           ],
         },
       });
     }
-    // Draft line
     if (!map.getLayer("draft-line")) {
       map.addLayer({
         id: "draft-line",
@@ -168,66 +232,15 @@ export default function MapPage() {
           "circle-stroke-width": strokeEnabled ? strokeWidth : 0,
           "circle-radius": [
             "interpolate", ["linear"], ["zoom"],
-            8,  metersToPixels(radiusM, 8) + strokeWidth,
+            8, metersToPixels(radiusM, 8) + strokeWidth,
             18, metersToPixels(radiusM, 18) + strokeWidth,
           ],
         },
       });
     }
-  };
+  }
 
-  // ============ INIT (useLayoutEffect + rAF) ============
-  useLayoutEffect(() => {
-    if (mapRef.current || !containerRef.current) return;
-
-    const style = buildBaseStyle();
-
-    // أنشئ الخريطة في frame التالي لضمان أن CSS/قياسات الـ Grid استقرّت
-    const id = requestAnimationFrame(() => {
-      const map = new maplibregl.Map({
-        container: containerRef.current!,
-        center: DIRIYAH_CENTER,
-        zoom: 14.8,
-        style,
-        attributionControl: true,
-        preserveDrawingBuffer: false,
-      });
-
-      map.on("error", (e) => {
-        console.error("[maplibre error]", e?.error || e);
-      });
-
-      mapRef.current = map;
-
-      map.once("load", () => {
-        ensureSourcesAndLayers();
-        isReadyRef.current = true;
-        fitDiriyahOnce();
-        map.resize();
-        setTimeout(() => map.resize(), 50);
-      });
-
-      // أي تغيّر في حجم الحاوية → resize
-      const ro = new ResizeObserver(() => map.resize());
-      ro.observe(containerRef.current!);
-      (map as any).__ro = ro; // تخزين لتفريغه عند الإزالة
-    });
-
-    return () => cancelAnimationFrame(id);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      const map = mapRef.current as any;
-      if (map) {
-        if (map.__ro) map.__ro.disconnect();
-        map.remove();
-        mapRef.current = null;
-      }
-    };
-  }, []);
-
-  // ============ Saved locations ============
+  // Saved locations → GeoJSON
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -246,9 +259,9 @@ export default function MapPage() {
       })),
     };
     (map.getSource("locations-src") as any)?.setData(fc);
-  }, [isLoading]);
+  }, [isLoading, data]);
 
-  // ============ Draft GEO (coords/name only) ============
+  // Draft GEO (coords/name only)
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -267,7 +280,7 @@ export default function MapPage() {
     (map.getSource("draft-src") as any)?.setData(geo);
   }, [draft?.lat, draft?.lng, draft?.name]);
 
-  // ============ Draft STYLE (via rAF) ============
+  // Draft STYLE (via rAF)
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -298,7 +311,7 @@ export default function MapPage() {
     return () => cancelAnimationFrame(raf);
   }, [fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled, radiusM]);
 
-  // ============ Actions ============
+  // Actions
   const handleNew = () => {
     const map = mapRef.current!;
     const c = map.getCenter();
@@ -359,6 +372,11 @@ export default function MapPage() {
     <div className="map-page">
       {/* العمود الأيسر = الخريطة */}
       <div className="map-container" ref={containerRef}>
+        {DEBUG && (
+          <div className="debug-overlay">
+            <b>Container:</b> {box.w} × {box.h}px {canInit ? "✅" : "⏳"}
+          </div>
+        )}
         <div className="map-toolbar">
           <Button onClick={handleNew} size="sm">
             <Plus className="mr-1 h-4 w-4" /> موقع جديد
