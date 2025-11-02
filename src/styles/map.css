@@ -15,9 +15,11 @@
   width: 100%;
   height: 100%;
   z-index: 1;
+  /* خلفية تشخيصية مؤقتة - احذفها لاحقاً */
+  background: repeating-conic-gradient(#f1f5f9 0% 25%, #e2e8f0 0% 50%) 50% / 20px 20px;
 }
 
-/* طبقة الكانفاس يجب أن تتمدد بالكامل */
+/* طبقة كانفاس MapLibre */
 .map-container .maplibregl-canvas,
 .map-container .maplibregl-canvas-container {
   position: absolute !important;
@@ -42,7 +44,7 @@
   width: 100%;
   height: 100%;
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(6px);
   border-left: 1px solid #e5e7eb;
   z-index: 20;
@@ -57,3 +59,16 @@
 
 .divider { height: 1px; background: rgba(0,0,0,0.08); margin: 8px 0; }
 .muted { color: #6b7280; font-size: 12px; }
+
+/* طبقة ديبَغ */
+.debug-overlay {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  z-index: 12;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border-radius: 8px;
+}
