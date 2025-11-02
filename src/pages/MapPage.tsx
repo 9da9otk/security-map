@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,8 +8,9 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
 import { Crosshair, Plus, Save, Trash2 } from "lucide-react";
-import maplibregl, { Map } from "maplibre-gl";
+import maplibregl, { Map, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import "@/styles/base.css";
 import "@/styles/map.css";
 
 const DIRIYAH_CENTER: [number, number] = [46.5733, 24.7423];
@@ -33,6 +34,47 @@ interface LocationDTO {
   strokeColor?: string | null;
   strokeWidth?: number | null;
   strokeEnabled?: boolean | null;
+}
+
+function buildBaseStyle(): StyleSpecification {
+  const key = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
+
+  if (key) {
+    // MapTiler (أنيق وسريع)
+    return {
+      version: 8,
+      sources: {
+        "basemap": {
+          type: "raster",
+          tiles: [
+            `https://api.maptiler.com/tiles/tiles/256/{z}/{x}/{y}.jpg?key=${key}`,
+          ],
+          tileSize: 256,
+          attribution:
+            "© MapTiler © OpenStreetMap contributors",
+        },
+      },
+      layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+    } as any;
+  }
+
+  // Fallback إلى OSM
+  return {
+    version: 8,
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: [
+          "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
+          "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
+          "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        ],
+        tileSize: 256,
+        attribution: "© OpenStreetMap",
+      },
+    },
+    layers: [{ id: "osm", type: "raster", source: "osm" }],
+  };
 }
 
 export default function MapPage() {
@@ -67,6 +109,7 @@ export default function MapPage() {
 
   const ensureSourcesAndLayers = () => {
     const map = mapRef.current!;
+    // Saved locations
     if (!map.getSource("locations-src")) {
       map.addSource("locations-src", {
         type: "geojson",
@@ -88,12 +131,14 @@ export default function MapPage() {
       });
     }
 
+    // Draft src
     if (!map.getSource("draft-src")) {
       map.addSource("draft-src", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
     }
+    // Draft fill
     if (!map.getLayer("draft-fill")) {
       map.addLayer({
         id: "draft-fill",
@@ -103,15 +148,14 @@ export default function MapPage() {
           "circle-color": fillColor,
           "circle-opacity": fillOpacity,
           "circle-radius": [
-            "interpolate",
-            ["linear"],
-            ["zoom"],
-            8, metersToPixels(radiusM, 8),
+            "interpolate", ["linear"], ["zoom"],
+            8,  metersToPixels(radiusM, 8),
             18, metersToPixels(radiusM, 18),
           ],
         },
       });
     }
+    // Draft line
     if (!map.getLayer("draft-line")) {
       map.addLayer({
         id: "draft-line",
@@ -123,10 +167,8 @@ export default function MapPage() {
           "circle-stroke-color": strokeColor,
           "circle-stroke-width": strokeEnabled ? strokeWidth : 0,
           "circle-radius": [
-            "interpolate",
-            ["linear"],
-            ["zoom"],
-            8, metersToPixels(radiusM, 8) + strokeWidth,
+            "interpolate", ["linear"], ["zoom"],
+            8,  metersToPixels(radiusM, 8) + strokeWidth,
             18, metersToPixels(radiusM, 18) + strokeWidth,
           ],
         },
@@ -134,63 +176,58 @@ export default function MapPage() {
     }
   };
 
-  // ===== Map init (grid layout friendly) =====
-  useEffect(() => {
+  // ============ INIT (useLayoutEffect + rAF) ============
+  useLayoutEffect(() => {
     if (mapRef.current || !containerRef.current) return;
 
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      center: DIRIYAH_CENTER,
-      zoom: 14.8,
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: "raster",
-            tiles: [
-              "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
-              "https://b.tile.openstreetmap.org/{z}/{x}/{y}.png",
-              "https://c.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            ],
-            tileSize: 256,
-            attribution: "© OpenStreetMap",
-          },
-        },
-        layers: [{ id: "osm", type: "raster", source: "osm" }],
-      },
-      attributionControl: true,
+    const style = buildBaseStyle();
+
+    // أنشئ الخريطة في frame التالي لضمان أن CSS/قياسات الـ Grid استقرّت
+    const id = requestAnimationFrame(() => {
+      const map = new maplibregl.Map({
+        container: containerRef.current!,
+        center: DIRIYAH_CENTER,
+        zoom: 14.8,
+        style,
+        attributionControl: true,
+        preserveDrawingBuffer: false,
+      });
+
+      map.on("error", (e) => {
+        console.error("[maplibre error]", e?.error || e);
+      });
+
+      mapRef.current = map;
+
+      map.once("load", () => {
+        ensureSourcesAndLayers();
+        isReadyRef.current = true;
+        fitDiriyahOnce();
+        map.resize();
+        setTimeout(() => map.resize(), 50);
+      });
+
+      // أي تغيّر في حجم الحاوية → resize
+      const ro = new ResizeObserver(() => map.resize());
+      ro.observe(containerRef.current!);
+      (map as any).__ro = ro; // تخزين لتفريغه عند الإزالة
     });
 
-    map.on("error", (e) => {
-      // يساعدك لو فيه خطأ CORS/Network
-      console.error("[maplibre error]", e?.error || e);
-    });
+    return () => cancelAnimationFrame(id);
+  }, []);
 
-    mapRef.current = map;
-    map.once("load", () => {
-      ensureSourcesAndLayers();
-      isReadyRef.current = true;
-      fitDiriyahOnce();
-
-      // resize safeguard بعد التحميل مباشرة
-      map.resize();
-      setTimeout(() => map.resize(), 50);
-    });
-
-    // مراقبة حجم الحاوية (Grid/Flex/Sidebar)
-    const ro = new ResizeObserver(() => {
-      map.resize();
-    });
-    ro.observe(containerRef.current);
-
+  useEffect(() => {
     return () => {
-      ro.disconnect();
-      map.remove();
-      mapRef.current = null;
+      const map = mapRef.current as any;
+      if (map) {
+        if (map.__ro) map.__ro.disconnect();
+        map.remove();
+        mapRef.current = null;
+      }
     };
   }, []);
 
-  // ===== Saved locations → GeoJSON =====
+  // ============ Saved locations ============
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -211,7 +248,7 @@ export default function MapPage() {
     (map.getSource("locations-src") as any)?.setData(fc);
   }, [isLoading]);
 
-  // ===== Draft GEO (coords/name only) =====
+  // ============ Draft GEO (coords/name only) ============
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -227,11 +264,10 @@ export default function MapPage() {
           ],
         }
       : { type: "FeatureCollection", features: [] };
-
     (map.getSource("draft-src") as any)?.setData(geo);
   }, [draft?.lat, draft?.lng, draft?.name]);
 
-  // ===== Draft STYLE (debounced via rAF) =====
+  // ============ Draft STYLE (via rAF) ============
   useEffect(() => {
     if (!isReadyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -241,10 +277,8 @@ export default function MapPage() {
         map.setPaintProperty("draft-fill", "circle-color", fillColor);
         map.setPaintProperty("draft-fill", "circle-opacity", clamp(fillOpacity, 0, 1));
         map.setPaintProperty("draft-fill", "circle-radius", [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          8, metersToPixels(radiusM, 8),
+          "interpolate", ["linear"], ["zoom"],
+          8,  metersToPixels(radiusM, 8),
           18, metersToPixels(radiusM, 18),
         ]);
       }
@@ -254,10 +288,8 @@ export default function MapPage() {
         map.setPaintProperty("draft-line", "circle-stroke-color", strokeColor);
         map.setPaintProperty("draft-line", "circle-stroke-width", strokeEnabled ? strokeWidth : 0);
         map.setPaintProperty("draft-line", "circle-radius", [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          8, metersToPixels(radiusM, 8) + strokeWidth,
+          "interpolate", ["linear"], ["zoom"],
+          8,  metersToPixels(radiusM, 8) + strokeWidth,
           18, metersToPixels(radiusM, 18) + strokeWidth,
         ]);
       }
@@ -266,7 +298,7 @@ export default function MapPage() {
     return () => cancelAnimationFrame(raf);
   }, [fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled, radiusM]);
 
-  // ===== Actions =====
+  // ============ Actions ============
   const handleNew = () => {
     const map = mapRef.current!;
     const c = map.getCenter();
@@ -337,7 +369,7 @@ export default function MapPage() {
         </div>
       </div>
 
-      {/* العمود الأيمن = الشريط الجانبي */}
+      {/* العمود الأيمن = اللوحة */}
       <Card className="map-sidebar">
         <CardHeader>
           <CardTitle>التحكم</CardTitle>
@@ -403,13 +435,7 @@ export default function MapPage() {
             <Label>نصف القطر (م)</Label>
             <div className="flex items-center gap-2">
               <Slider value={[radiusM]} min={5} max={500} step={1} onValueChange={(v) => setRadiusM(v[0])} disabled={!draft} />
-              <Input
-                className="w-20"
-                type="number"
-                value={radiusM}
-                onChange={(e) => setRadiusM(clamp(Number(e.target.value), 1, 1000))}
-                disabled={!draft}
-              />
+              <Input className="w-20" type="number" value={radiusM} onChange={(e) => setRadiusM(clamp(Number(e.target.value), 1, 1000))} disabled={!draft} />
             </div>
 
             <Label>لون التعبئة</Label>
