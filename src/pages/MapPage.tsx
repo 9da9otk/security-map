@@ -8,13 +8,16 @@ import { trpc } from "@/lib/trpc";
 const DIRIYYAH_CENTER: [number, number] = [46.67, 24.74];
 const DIRIYYAH_ZOOM = 13;
 
-const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
-const STYLE_MAPTILER = MAPTILER_KEY
-  ? `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`
-  : null;
+/** نجبر الستايل على fallback لتفادي أي reset للكاميرا */
 const STYLE_FALLBACK = "https://demotiles.maplibre.org/style.json";
 
-type StyleJSON = { fill?: string; fillOpacity?: number; stroke?: string; strokeWidth?: number; strokeEnabled?: boolean; };
+type StyleJSON = {
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeEnabled?: boolean;
+};
 const parseStyle = (s?: string | null): StyleJSON => { try { return s ? JSON.parse(s) : {}; } catch { return {}; } };
 const styleJSON = (o: StyleJSON) => JSON.stringify(o ?? {});
 const circlePolygonFor = (lng: number, lat: number, r: number) =>
@@ -26,14 +29,13 @@ export default function MapPage() {
   const mapRef = useRef<Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
   const loadedRef = useRef(false);
-  const usingFallbackRef = useRef<boolean>(!STYLE_MAPTILER); // ابدأ بالفول-باك لو ما فيه مفتاح
 
   const [mode, setMode] = useState<Mode>("view");
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
-  // tRPC
+  // API
   const listQ   = trpc.locations.list.useQuery();
-  const getQ    = trpc.locations.getById.useQuery({ id: selectedId ?? 0 }, { enabled: selectedId != null, refetchOnWindowFocus: false });
+  const getQ    = trpc.locations.getById.useQuery({ id: selectedId ?? 0 }, { enabled: selectedId != null });
   const createM = trpc.locations.create.useMutation();
   const updateM = trpc.locations.update.useMutation();
   const deleteM = trpc.locations.delete.useMutation();
@@ -41,12 +43,16 @@ export default function MapPage() {
   const listData: any[] = listQ.data ?? [];
   const selectedLoc = useMemo(() => listData.find((x) => Number(x.id) === selectedId), [listData, selectedId]);
 
-  // حالة المحرر
+  // محرر
   const s0 = parseStyle(selectedLoc?.notes);
   const [edit, setEdit] = useState({
     name: "", description: "", type: "mixed" as "mixed"|"security"|"traffic",
-    radius: 50, fill: s0.fill ?? "#f59e0b", fillOpacity: s0.fillOpacity ?? 0.25,
-    stroke: s0.stroke ?? "#b45309", strokeWidth: s0.strokeWidth ?? 2, strokeEnabled: s0.strokeEnabled ?? true,
+    radius: 50,
+    fill: s0.fill ?? "#f59e0b",
+    fillOpacity: s0.fillOpacity ?? 0.25,
+    stroke: s0.stroke ?? "#b45309",
+    strokeWidth: s0.strokeWidth ?? 2,
+    strokeEnabled: s0.strokeEnabled ?? true,
   });
 
   useEffect(() => {
@@ -65,9 +71,10 @@ export default function MapPage() {
     });
   }, [selectedLoc?.id]);
 
+  // مسودة الإنشاء
   const [draft, setDraft] = useState<{ lat: number | null; lng: number | null }>({ lat: null, lng: null });
 
-  // ===== GeoJSON (يشمل المسودة) =====
+  // GeoJSON
   const geojson = useMemo(() => {
     const fc: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
     for (const loc of listData) {
@@ -109,39 +116,41 @@ export default function MapPage() {
     const src = mapRef.current?.getSource("locations-src") as maplibregl.GeoJSONSource | undefined;
     if (!src) return;
     const payload = data ?? geojsonRef.current;
+    // clone بسيط لتفادي cache داخلي
     src.setData(JSON.parse(JSON.stringify(payload)));
   };
 
-  // ===== تهيئة الخريطة مرة واحدة =====
+  // تهيئة الخريطة مرة واحدة فقط
   useEffect(() => {
     if (mapRef.current) return;
 
-    const initialStyle = usingFallbackRef.current ? STYLE_FALLBACK : (STYLE_MAPTILER ?? STYLE_FALLBACK);
-
     const map = new maplibregl.Map({
       container: "map",
-      style: initialStyle,
+      style: STYLE_FALLBACK,           // 👈 ثابت
       center: DIRIYYAH_CENTER as LngLatLike,
       zoom: DIRIYYAH_ZOOM,
       attributionControl: false,
     });
     mapRef.current = map;
+
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     requestAnimationFrame(() => map.resize());
 
-    // إضافة السورس والطبقات
     const prepare = () => {
       if (map.getSource("locations-src")) return;
       map.addSource("locations-src", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "id" });
 
       map.addLayer({
         id: "loc-fill", type: "fill", source: "locations-src",
-        paint: { "fill-color": ["coalesce", ["get","fill"], "#f59e0b"], "fill-opacity": ["coalesce", ["get","fillOpacity"], 0.25] }
+        paint: {
+          "fill-color": ["coalesce", ["get","fill"], "#f59e0b"],
+          "fill-opacity": ["coalesce", ["get","fillOpacity"], 0.25],
+        }
       });
 
       map.addLayer({
         id: "loc-outline", type: "line", source: "locations-src",
-        layout: { "line-cap": "round", "line-join": "round" },
+        layout: { "line-cap":"round", "line-join":"round" },
         paint: {
           "line-color": ["coalesce", ["get","stroke"], "#b45309"],
           "line-width": ["coalesce", ["get","strokeWidth"], 2],
@@ -155,36 +164,14 @@ export default function MapPage() {
       });
     };
 
-    // بدّل للـ fallback **فقط** عند فشل تحميل الستايل (401/403/404)، وليس كل error
-    const onError = (e: any) => {
-      const status = e?.error?.status;
-      if (!status || usingFallbackRef.current) return; // تجاهل أخطاء التايلز العادية
-      if (status === 401 || status === 403 || status === 404) {
-        const center = map.getCenter(), zoom = map.getZoom(), bearing = map.getBearing(), pitch = map.getPitch();
-        usingFallbackRef.current = true;
-        map.setStyle(STYLE_FALLBACK);
-        map.once("styledata", () => {
-          prepare();
-          map.jumpTo({ center, zoom, bearing, pitch }); // حافظ على الكاميرا
-          setSourceData();
-          setTimeout(() => map.resize(), 0);
-          // بعد ثبات الستايل، احذف المستمع حتى لا يعاد التبديل
-          map.off("error", onError);
-        });
-      }
-    };
-
-    // عند أول تحميل ستايل: حضّر الطبقات واضبط البيانات واحذف مستمع error (ما عاد نحتاجه بعد ثبات الستايل)
     map.on("load", () => {
       loadedRef.current = true;
       prepare();
       setSourceData();
       setTimeout(() => map.resize(), 0);
-      // إذا بدأنا بستايـل MapTiler، فعّل المراقبة للـ 401/403/404 فقط
-      if (!usingFallbackRef.current) map.on("error", onError);
     });
 
-    // تفاعلات
+    // Hover
     const onEnter = () => (map.getCanvas().style.cursor = "pointer");
     const onLeave = () => { map.getCanvas().style.cursor = ""; popupRef.current?.remove(); };
     const onMove  = (e: MapLayerMouseEvent) => {
@@ -195,7 +182,8 @@ export default function MapPage() {
         <div style="font-size:12px;opacity:.8">النوع: ${p.type}</div>
         <div style="font-size:12px;opacity:.8">النطاق: ${p.radius} م</div>
       </div>`;
-      if (!popupRef.current) popupRef.current = new maplibregl.Popup({ closeButton:false, closeOnClick:false, offset:8 });
+      if (!popupRef.current)
+        popupRef.current = new maplibregl.Popup({ closeButton:false, closeOnClick:false, offset:8 });
       popupRef.current.setLngLat(e.lngLat).setHTML(html).addTo(map);
     };
     const onClickFill = (e: MapLayerMouseEvent) => {
@@ -205,11 +193,13 @@ export default function MapPage() {
       setSelectedId(id);
       setMode("edit");
     };
+
     map.on("mouseenter", "loc-fill", onEnter);
     map.on("mouseleave", "loc-fill", onLeave);
     map.on("mousemove", "loc-fill", onMove);
     map.on("click", "loc-fill", onClickFill);
 
+    // اختيار مركز الدائرة في وضع الإنشاء
     const onClickMap = (e: maplibregl.MapMouseEvent & maplibregl.EventData) => {
       if (mode !== "create") return;
       const { lng, lat } = e.lngLat.wrap();
@@ -240,16 +230,16 @@ export default function MapPage() {
       mapRef.current = null;
       loadedRef.current = false;
     };
-  }, []); // ← مرة واحدة فقط
+  }, []); // مرة واحدة فقط
 
-  // دفع البيانات عند تغيّر الـGeoJSON (بدون لمس الكاميرا)
+  // كل تعديل على geojson → setData فقط (بدون تعديل الكاميرا)
   useEffect(() => {
     if (!mapRef.current) return;
     if (loadedRef.current) setSourceData();
     else mapRef.current.once("load", setSourceData);
   }, [geojson]);
 
-  // ===== المعاينة الحية =====
+  // معاينة فورية
   function live(partial: Partial<typeof edit>) {
     setEdit((prev) => {
       const next = { ...prev, ...partial };
@@ -276,10 +266,14 @@ export default function MapPage() {
     });
   }
 
-  // أفعال الحفظ/الحذف/الإلغاء
+  // حفظ/حذف/إنشاء
   async function saveEdit() {
     if (selectedId == null) return;
-    const notes = styleJSON({ fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled });
+    const notes = styleJSON({
+      fill: edit.fill, fillOpacity: edit.fillOpacity,
+      stroke: edit.stroke, strokeWidth: edit.strokeWidth,
+      strokeEnabled: edit.strokeEnabled,
+    });
     try {
       await updateM.mutateAsync({ id: selectedId, name: edit.name, description: edit.description, locationType: edit.type, radius: edit.radius, notes } as any);
     } catch {
@@ -309,8 +303,7 @@ export default function MapPage() {
     } catch {
       await fetch(`/api/locations`, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
         body: JSON.stringify({ name: edit.name || "موقع", description: edit.description || null, latitude: draft.lat, longitude: draft.lng,
-          locationType: edit.type, radius: edit.radius,
-          notes: styleJSON({ fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled }) }) });
+          locationType: edit.type, radius: edit.radius, notes: styleJSON({ fill: edit.fill, fillOpacity: edit.fillOpacity, stroke: edit.stroke, strokeWidth: edit.strokeWidth, strokeEnabled: edit.strokeEnabled }) }) });
     }
     await listQ.refetch(); cancel();
   }
@@ -322,11 +315,12 @@ export default function MapPage() {
     geojsonRef.current = updated; setSourceData(updated);
   }
 
-  // ===== الواجهة =====
+  // UI
   return (
     <div className="maplibre-page">
       <div id="map" />
 
+      {/* لستة المواقع + زر جديد */}
       <div className="map-panel" style={{ position:"absolute", left:16, top:16, width:260, maxHeight:"80vh", overflow:"auto" }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
           <div style={{ fontWeight:700 }}>المواقع</div>
@@ -344,6 +338,7 @@ export default function MapPage() {
         ))}
       </div>
 
+      {/* محرر التعديل */}
       {mode === "edit" && selectedLoc && (
         <div className="map-panel" style={{ position:"absolute", right:16, top:16, width:380, maxHeight:"92vh", overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
@@ -398,6 +393,7 @@ export default function MapPage() {
         </div>
       )}
 
+      {/* محرر الإنشاء */}
       {mode === "create" && (
         <div className="map-panel" style={{ position:"absolute", right:16, top:16, width:380, maxHeight:"92vh", overflow:"auto" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
