@@ -12,11 +12,15 @@ import maplibregl, { Map, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "@/styles/map.css";
 
+/** مركز ونطاق الدرعية */
 const DIRIYAH_CENTER: [number, number] = [46.5733, 24.7423];
 const DIRIYAH_BOUNDS: [[number, number], [number, number]] = [
   [46.5598, 24.7328],
   [46.5864, 24.7512],
 ];
+
+/** مفتاح MapTiler من متغيرات البيئة (Vite) */
+const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
 
 type LocationDTO = {
   id: string;
@@ -35,7 +39,8 @@ type LocationDTO = {
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
 
-function buildStyle(): StyleSpecification {
+/** ستايل افتراضي (Fallback) على OSM عند عدم توفر مفتاح MapTiler */
+function buildOSMStyle(): StyleSpecification {
   return {
     version: 8,
     sources: {
@@ -47,20 +52,19 @@ function buildStyle(): StyleSpecification {
       },
     },
     layers: [
-      {
-        id: "background",
-        type: "background",
-        paint: { "background-color": "#f0f0f0" },
-      },
-      {
-        id: "osm-tiles",
-        type: "raster",
-        source: "osm",
-        minzoom: 0,
-        maxzoom: 22,
-      },
+      { id: "background", type: "background", paint: { "background-color": "#f0f0f0" } },
+      { id: "osm-tiles", type: "raster", source: "osm", minzoom: 0, maxzoom: 22 },
     ],
   };
+}
+
+/** يختار ستايل MapTiler أو يرجع لـ OSM */
+function getBaseStyle(): string | StyleSpecification {
+  if (MAPTILER_KEY && typeof MAPTILER_KEY === "string" && MAPTILER_KEY.length > 5) {
+    // أنماط أخرى متاحة: streets, basic-v2, bright, outdoor, satellite, hybrid
+    return `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`;
+  }
+  return buildOSMStyle();
 }
 
 export default function MapPage() {
@@ -80,12 +84,14 @@ export default function MapPage() {
   const [strokeEnabled, setStrokeEnabled] = useState(true);
   const [radiusM, setRadiusM] = useState(60);
 
+  /** تحويل المتر إلى بكسل بحسب الزووم (معتمِد على دائرة الدرعية) */
   function metersToPixels(m: number, z: number) {
     const lat = DIRIYAH_CENTER[1];
     const mpp = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, z);
     return m / mpp;
   }
 
+  /** تهيئة الخريطة مرة واحدة */
   useEffect(() => {
     if (mapRef.current || !mapEl.current) return;
 
@@ -96,14 +102,19 @@ export default function MapPage() {
       container: mapEl.current,
       center: DIRIYAH_CENTER,
       zoom: 14.8,
-      style: buildStyle(),
+      style: getBaseStyle(),
       attributionControl: true,
+      maxBounds: [
+        [46.45, 24.60], // حدود واسعة لمنع الانحراف بعيداً
+        [46.70, 24.85],
+      ],
     });
 
     map.on("error", (e) => console.error("[maplibre]", e?.error || e));
     mapRef.current = map;
 
     map.once("load", () => {
+      // مصدر ولير مواقع الحفظ
       if (!map.getSource("locations-src")) {
         map.addSource("locations-src", {
           type: "geojson",
@@ -125,6 +136,7 @@ export default function MapPage() {
         });
       }
 
+      // مصدر ولير المسودة (للمعاينة الحية)
       if (!map.getSource("draft-src")) {
         map.addSource("draft-src", {
           type: "geojson",
@@ -166,11 +178,10 @@ export default function MapPage() {
         });
       }
 
-      map.resize();
       readyRef.current = true;
-
       map.addControl(new maplibregl.NavigationControl(), "top-left");
-      map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, duration: 0 });
+      map.fitBounds(DIRIYAH_BOUNDS, { padding: 40, duration: 0 }); // دخول افتراضي على نطاق الدرعية
+      map.resize();
     });
 
     const ro = new ResizeObserver(() => map.resize());
@@ -187,6 +198,7 @@ export default function MapPage() {
   const { mutateAsync: remove } = deleteMutation;
   const locations: LocationDTO[] = useMemo(() => (data as any) ?? [], [data]);
 
+  /** تحديث بيانات المواقع المخزّنة على الخريطة */
   useEffect(() => {
     if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -201,16 +213,18 @@ export default function MapPage() {
           fillColor: l.fillColor ?? "#118bee",
           strokeColor: l.strokeColor ?? "#002255",
         },
+        // ملاحظة: الـ API لديك ترجع latitude/longitude
         geometry: { type: "Point" as const, coordinates: [Number(l.longitude), Number(l.latitude)] },
       })),
     };
     (map.getSource("locations-src") as any)?.setData(fc);
   }, [isLoading, locations]);
 
+  /** تحديث المسودة (معاينة فورية) */
   useEffect(() => {
     if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
-    const data = draft
+    const dataGeo = draft
       ? {
           type: "FeatureCollection" as const,
           features: [{
@@ -221,9 +235,10 @@ export default function MapPage() {
         }
       : { type: "FeatureCollection", features: [] };
 
-    (map.getSource("draft-src") as any)?.setData(data);
+    (map.getSource("draft-src") as any)?.setData(dataGeo);
   }, [draft?.lat, draft?.lng, draft?.name]);
 
+  /** تطبيق خصائص الرسم فورياً (بدون حفظ) */
   useEffect(() => {
     if (!readyRef.current || !mapRef.current) return;
     const map = mapRef.current;
@@ -250,6 +265,7 @@ export default function MapPage() {
     }
   }, [fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled, radiusM]);
 
+  /** إنشاء مسودة في مركز الخريطة الحالي */
   const handleNew = () => {
     const map = mapRef.current!;
     const c = map.getCenter();
@@ -268,6 +284,7 @@ export default function MapPage() {
     });
   };
 
+  /** حفظ المسودة إلى قاعدة البيانات */
   const handleSave = async () => {
     if (!draft) return;
     await upsert({
@@ -283,12 +300,14 @@ export default function MapPage() {
     await refetch();
   };
 
+  /** حذف موقع */
   const handleDelete = async (id: string) => {
     await remove({ id });
     if (draft?.id === id) setDraft(null);
     await refetch();
   };
 
+  /** اختيار موقع قائم للتعديل */
   const selectExisting = (loc: any) => {
     setDraft({
       id: String(loc.id),
@@ -297,6 +316,11 @@ export default function MapPage() {
       lng: Number(loc.longitude),
       radius: loc.radius ?? 60,
       notes: loc.notes,
+      fillColor: loc.fillColor ?? "#0066ff",
+      fillOpacity: loc.fillOpacity ?? 0.25,
+      strokeColor: loc.strokeColor ?? "#001533",
+      strokeWidth: loc.strokeWidth ?? 2,
+      strokeEnabled: loc.strokeEnabled ?? true,
     });
     setRadiusM(loc.radius ?? 60);
     setFillColor(loc.fillColor ?? "#0066ff");
@@ -312,7 +336,12 @@ export default function MapPage() {
         <div ref={mapEl} className="map-canvas" />
         <div className="map-toolbar">
           <Button onClick={handleNew} size="sm"><Plus className="mr-1 h-4 w-4" /> موقع جديد</Button>
-          <Button variant="secondary" size="sm" onClick={() => mapRef.current?.fitBounds(DIRIYAH_BOUNDS, {padding:40, duration:0})}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => mapRef.current?.fitBounds(DIRIYAH_BOUNDS, { padding: 40, duration: 0 })}
+            title="الرجوع إلى نطاق الدرعية"
+          >
             <Crosshair className="mr-1 h-4 w-4" /> نطاق الدرعية
           </Button>
         </div>
@@ -330,7 +359,9 @@ export default function MapPage() {
                 <div key={l.id} className={`loc-row ${draft?.id === String(l.id) ? "active" : ""}`}>
                   <button onClick={() => selectExisting(l)}>{l.name}</button>
                   <div className="actions">
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(String(l.id))} title="حذف"><Trash2 className="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleDelete(String(l.id))} title="حذف">
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -347,22 +378,27 @@ export default function MapPage() {
             <Textarea value={draft?.notes ?? ""} onChange={(e)=>draft&&setDraft({...draft, notes:e.target.value})} disabled={!draft} placeholder="ملاحظات" />
 
             <Label>خط العرض</Label>
-            <Input type="number" step="0.000001" value={draft?toFixed(draft.lat):""} onChange={(e)=>draft&&setDraft({...draft, lat:Number(e.target.value)})} disabled={!draft} />
+            <Input type="number" step="0.000001" value={draft?toFixed(draft.lat):""}
+                   onChange={(e)=>draft&&setDraft({...draft, lat:Number(e.target.value)})} disabled={!draft} />
 
             <Label>خط الطول</Label>
-            <Input type="number" step="0.000001" value={draft?toFixed(draft.lng):""} onChange={(e)=>draft&&setDraft({...draft, lng:Number(e.target.value)})} disabled={!draft} />
+            <Input type="number" step="0.000001" value={draft?toFixed(draft.lng):""}
+                   onChange={(e)=>draft&&setDraft({...draft, lng:Number(e.target.value)})} disabled={!draft} />
 
             <Label>نصف القطر (م)</Label>
             <div className="flex items-center gap-2">
-              <Slider value={[radiusM]} min={5} max={500} step={1} onValueChange={(v)=>setRadiusM(v[0])} disabled={!draft} />
-              <Input className="w-20" type="number" value={radiusM} onChange={(e)=>setRadiusM(clamp(Number(e.target.value),1,1000))} disabled={!draft} />
+              <Slider value={[radiusM]} min={5} max={500} step={1}
+                      onValueChange={(v)=>setRadiusM(v[0])} disabled={!draft} />
+              <Input className="w-20" type="number" value={radiusM}
+                     onChange={(e)=>setRadiusM(clamp(Number(e.target.value),1,1000))} disabled={!draft} />
             </div>
 
             <Label>لون التعبئة</Label>
             <Input type="color" value={fillColor} onChange={(e)=>setFillColor(e.target.value)} disabled={!draft} />
 
             <Label>شفافية التعبئة</Label>
-            <Slider value={[Math.round(fillOpacity*100)]} min={0} max={100} step={1} onValueChange={(v)=>setFillOpacity(v[0]/100)} disabled={!draft} />
+            <Slider value={[Math.round(fillOpacity*100)]} min={0} max={100} step={1}
+                    onValueChange={(v)=>setFillOpacity(v[0]/100)} disabled={!draft} />
 
             <div className="col-span-2 grid grid-cols-2 gap-2 items-center">
               <Label>إظهار الحدود</Label>
@@ -373,7 +409,8 @@ export default function MapPage() {
             <Input type="color" value={strokeColor} onChange={(e)=>setStrokeColor(e.target.value)} disabled={!draft} />
 
             <Label>سُمك الحدود</Label>
-            <Slider value={[strokeWidth]} min={0} max={20} step={1} onValueChange={(v)=>setStrokeWidth(v[0])} disabled={!draft} />
+            <Slider value={[strokeWidth]} min={0} max={20} step={1}
+                    onValueChange={(v)=>setStrokeWidth(v[0])} disabled={!draft} />
           </div>
 
           <div className="flex gap-2 pt-2">
