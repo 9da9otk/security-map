@@ -3,60 +3,43 @@ import { procedure, router } from "../_core/trpc";
 import { getDb, locations } from "../db";
 import { eq } from "drizzle-orm";
 
-/** محوّل مساعد لتوحيد الإخراج (اختياري) */
-// const toPlain = (row: any) => ({
-//   ...row,
-//   id: Number(row.id),
-//   latitude: row.latitude,
-//   longitude: row.longitude,
-// });
+const v = "locationsRouter v3 (coerce.number + logs)";
 
 export const locationsRouter = router({
-  /* قائمة المواقع */
+  __version: procedure.query(() => ({ v })),
+
   list: procedure.query(async () => {
     const db = await getDb();
     const rows = await db.select().from(locations).orderBy(locations.id);
-    // إن رغبت ترجع id رقمًا:
-    // return rows.map(toPlain);
     return rows;
   }),
 
-  /* جلب موقع بالمعرف */
   getById: procedure
     .input(z.object({ id: z.coerce.number().int().positive() }))
     .query(async ({ input }) => {
       const db = await getDb();
-      const rows = await db
-        .select()
-        .from(locations)
-        .where(eq(locations.id, input.id))
-        .limit(1);
+      const rows = await db.select().from(locations).where(eq(locations.id, input.id)).limit(1);
       return rows[0] ?? null;
     }),
 
-  /* إنشاء/تحديث سريع */
   upsert: procedure
-    .input(
-      z.object({
-        id: z.coerce.number().int().positive().optional(), // كان string → الآن يُحوَّل لnumber تلقائيًا
-        name: z.string().min(1),
-        lat: z.number(),
-        lng: z.number(),
-        radius: z.number().default(30),
-        notes: z.string().optional().nullable(),
-        fillColor: z.string().optional().nullable(),
-        fillOpacity: z.number().optional().nullable(),
-        strokeColor: z.string().optional().nullable(),
-        strokeWidth: z.number().optional().nullable(),
-        strokeEnabled: z.boolean().optional().nullable(),
-      })
-    )
+    .input(z.object({
+      id: z.coerce.number().int().positive().optional(),
+      name: z.string().min(1),
+      lat: z.number(),
+      lng: z.number(),
+      radius: z.number().default(30),
+      notes: z.string().optional().nullable(),
+      fillColor: z.string().optional().nullable(),
+      fillOpacity: z.number().optional().nullable(),
+      strokeColor: z.string().optional().nullable(),
+      strokeWidth: z.number().optional().nullable(),
+      strokeEnabled: z.boolean().optional().nullable(),
+    }))
     .mutation(async ({ input }) => {
       const db = await getDb();
 
-      // تحديث
-      if (input.id && Number.isFinite(input.id)) {
-        const numId = Number(input.id);
+      if (input.id) {
         const patch: any = {
           name: input.name,
           latitude: String(input.lat),
@@ -70,83 +53,41 @@ export const locationsRouter = router({
         if (input.strokeWidth !== undefined) patch.strokeWidth = input.strokeWidth;
         if (input.strokeEnabled !== undefined) patch.strokeEnabled = input.strokeEnabled;
 
-        const [row] = await db
-          .update(locations)
-          .set(patch)
-          .where(eq(locations.id, numId))
-          .returning();
+        const [row] = await db.update(locations).set(patch).where(eq(locations.id, input.id)).returning();
         return row;
       }
 
-      // إنشاء
-      const [row] = await db
-        .insert(locations)
-        .values({
-          name: input.name,
-          latitude: String(input.lat),
-          longitude: String(input.lng),
-          radius: input.radius,
-          notes: input.notes ?? null,
-          isActive: 1,
-          locationType: "security",
-          fillColor: input.fillColor ?? null,
-          fillOpacity: input.fillOpacity ?? null,
-          strokeColor: input.strokeColor ?? null,
-          strokeWidth: input.strokeWidth ?? null,
-          strokeEnabled: input.strokeEnabled ?? null,
-        })
-        .returning();
+      const [row] = await db.insert(locations).values({
+        name: input.name,
+        latitude: String(input.lat),
+        longitude: String(input.lng),
+        radius: input.radius,
+        notes: input.notes ?? null,
+        isActive: 1,
+        locationType: "security",
+        fillColor: input.fillColor ?? null,
+        fillOpacity: input.fillOpacity ?? null,
+        strokeColor: input.strokeColor ?? null,
+        strokeWidth: input.strokeWidth ?? null,
+        strokeEnabled: input.strokeEnabled ?? null,
+      }).returning();
       return row;
     }),
 
-  /* إنشاء قياسي */
-  create: procedure
-    .input(
-      z.object({
-        name: z.string().min(1),
-        description: z.string().optional().nullable(),
-        locationType: z.enum(["security", "traffic", "mixed"]),
-        latitude: z.number(),
-        longitude: z.number(),
-        radius: z.number().default(30),
-        notes: z.string().optional().nullable(),
-      })
-    )
-    .mutation(async ({ input }) => {
-      const db = await getDb();
-      const [row] = await db
-        .insert(locations)
-        .values({
-          name: input.name,
-          description: input.description ?? null,
-          locationType: input.locationType,
-          latitude: String(input.latitude),
-          longitude: String(input.longitude),
-          radius: input.radius,
-          notes: input.notes ?? null,
-          isActive: 1,
-        })
-        .returning();
-      return row;
-    }),
-
-  /* تحديث جزئي */
   update: procedure
-    .input(
-      z.object({
-        id: z.coerce.number().int().positive(),
-        name: z.string().min(1).optional(),
-        description: z.string().optional().nullable(),
-        locationType: z.enum(["security", "traffic", "mixed"]).optional(),
-        radius: z.number().optional(),
-        notes: z.string().optional().nullable(),
-        fillColor: z.string().optional().nullable(),
-        fillOpacity: z.number().optional().nullable(),
-        strokeColor: z.string().optional().nullable(),
-        strokeWidth: z.number().optional().nullable(),
-        strokeEnabled: z.boolean().optional().nullable(),
-      })
-    )
+    .input(z.object({
+      id: z.coerce.number().int().positive(),
+      name: z.string().min(1).optional(),
+      description: z.string().optional().nullable(),
+      locationType: z.enum(["security", "traffic", "mixed"]).optional(),
+      radius: z.number().optional(),
+      notes: z.string().optional().nullable(),
+      fillColor: z.string().optional().nullable(),
+      fillOpacity: z.number().optional().nullable(),
+      strokeColor: z.string().optional().nullable(),
+      strokeWidth: z.number().optional().nullable(),
+      strokeEnabled: z.boolean().optional().nullable(),
+    }))
     .mutation(async ({ input }) => {
       const db = await getDb();
       const patch: any = {};
@@ -161,23 +102,18 @@ export const locationsRouter = router({
       if (input.strokeWidth !== undefined) patch.strokeWidth = input.strokeWidth;
       if (input.strokeEnabled !== undefined) patch.strokeEnabled = input.strokeEnabled;
 
-      const [row] = await db
-        .update(locations)
-        .set(patch)
-        .where(eq(locations.id, input.id))
-        .returning();
+      const [row] = await db.update(locations).set(patch).where(eq(locations.id, input.id)).returning();
       return row;
     }),
 
-  /* حذف */
   delete: procedure
-    .input(z.object({ id: z.coerce.number().int().positive() })) // كان string → الآن يتحول لرقم
+    .input(z.object({ id: z.coerce.number().int().positive() }))
     .mutation(async ({ input }) => {
+      // لوغ تأكيدي
+      // eslint-disable-next-line no-console
+      console.log("[locations.delete] input.id typeof:", typeof input.id, "value:", input.id);
       const db = await getDb();
-      const [row] = await db
-        .delete(locations)
-        .where(eq(locations.id, input.id))
-        .returning();
+      const [row] = await db.delete(locations).where(eq(locations.id, input.id)).returning();
       return row;
     }),
 });
