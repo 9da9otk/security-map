@@ -18,8 +18,7 @@ const DIRIYAH_BOUNDS: [[number, number], [number, number]] = [
   [46.5864, 24.7512],
 ];
 
-const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_KEY as string | undefined;
-
+/* ====== helpers ====== */
 type LocationDTO = {
   id: number | "draft";
   name: string;
@@ -36,6 +35,35 @@ type LocationDTO = {
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const toFixed = (v: number, n = 6) => Number.parseFloat(String(v)).toFixed(n);
+
+function getQueryParam(name: string) {
+  if (typeof window === "undefined") return undefined;
+  const u = new URL(window.location.href);
+  return u.searchParams.get(name) || undefined;
+}
+
+/** يحاول جلب مفتاح MapTiler بعدة طرق لضمان العمل حتى لو فشل الحقن وقت الـ build */
+function getMaptilerKey(): string | undefined {
+  // 1) Vite build-time
+  const fromVite = (import.meta as any)?.env?.VITE_MAPTILER_KEY as string | undefined;
+  if (fromVite && fromVite.length > 5) return fromVite;
+
+  // 2) نافذة المتصفح (يمكن حقنها يدوياً في index.html: window.VITE_MAPTILER_KEY = '...';
+  const fromWindow = (globalThis as any)?.VITE_MAPTILER_KEY as string | undefined;
+  if (fromWindow && fromWindow.length > 5) return fromWindow;
+
+  // 3) localStorage (للاختبار السريع)
+  try {
+    const fromLS = typeof window !== "undefined" ? window.localStorage.getItem("VITE_MAPTILER_KEY") || undefined : undefined;
+    if (fromLS && fromLS.length > 5) return fromLS;
+  } catch {}
+
+  // 4) باراميتر في الرابط ?mtk=KEY (للتجربة اليدوية)
+  const fromURL = getQueryParam("mtk");
+  if (fromURL && fromURL.length > 5) return fromURL;
+
+  return undefined;
+}
 
 function buildOSMStyle(): StyleSpecification {
   return {
@@ -56,17 +84,34 @@ function buildOSMStyle(): StyleSpecification {
 }
 
 function getBaseStyle(): string | StyleSpecification {
-  if (MAPTILER_KEY && MAPTILER_KEY.length > 5) {
-    return `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`;
+  const KEY = getMaptilerKey();
+  if (KEY) {
+    console.info("[maps] Using MapTiler with key");
+    // اختر ستايل آخر إذا تبي: basic-v2, bright, outdoor, satellite, hybrid...
+    return `https://api.maptiler.com/maps/streets/style.json?key=${KEY}`;
   }
-  console.warn("[maps] VITE_MAPTILER_KEY غير موجود — سيتم استخدام OSM fallback");
+  console.warn("[maps] MapTiler key not found — using OSM fallback");
   return buildOSMStyle();
+}
+
+/** يحاول العثور على ميوتاشن موجودة: upsert أو save أو set أو create أو update */
+function pickUpsertMutation() {
+  const anyTrpc = trpc as any;
+  const candidates = ["upsert", "save", "set", "create", "update"];
+  for (const name of candidates) {
+    const fn = anyTrpc?.locations?.[name]?.useMutation;
+    if (typeof fn === "function") return fn.call(anyTrpc.locations);
+  }
+  return null;
 }
 
 export default function MapPage() {
   const { data, isLoading, refetch } = trpc.locations.list.useQuery();
-  const upsertMutation = trpc.locations.upsert.useMutation();
   const deleteMutation = trpc.locations.delete.useMutation();
+
+  // اختر ميوتاشن للحفظ مما هو متاح
+  const UpsertHook = pickUpsertMutation();
+  const upsertMutation = UpsertHook ? UpsertHook() : null;
 
   const mapRef = useRef<Map | null>(null);
   const mapEl = useRef<HTMLDivElement | null>(null);
@@ -186,7 +231,6 @@ export default function MapPage() {
     };
   }, []);
 
-  const { mutateAsync: upsert } = upsertMutation;
   const { mutateAsync: remove } = deleteMutation;
   const locations = useMemo(() => (data as any[]) ?? [], [data]);
 
@@ -197,17 +241,14 @@ export default function MapPage() {
       type: "FeatureCollection" as const,
       features: (locations ?? []).map((l: any) => ({
         type: "Feature" as const,
-        id: Number(l.id), // مهم: id رقم
+        id: Number(l.id),
         properties: {
           id: Number(l.id),
           name: l.name,
           fillColor: l.fillColor ?? "#118bee",
           strokeColor: l.strokeColor ?? "#002255",
         },
-        geometry: {
-          type: "Point" as const,
-          coordinates: [Number(l.longitude), Number(l.latitude)],
-        },
+        geometry: { type: "Point" as const, coordinates: [Number(l.longitude), Number(l.latitude)] },
       })),
     };
     (map.getSource("locations-src") as any)?.setData(fc);
@@ -219,13 +260,11 @@ export default function MapPage() {
     const dataGeo = draft
       ? {
           type: "FeatureCollection" as const,
-          features: [
-            {
-              type: "Feature" as const,
-              properties: { name: draft.name || "Draft" },
-              geometry: { type: "Point" as const, coordinates: [draft.lng, draft.lat] },
-            },
-          ],
+          features: [{
+            type: "Feature" as const,
+            properties: { name: draft.name || "Draft" },
+            geometry: { type: "Point" as const, coordinates: [draft.lng, draft.lat] },
+          }],
         }
       : { type: "FeatureCollection", features: [] };
 
@@ -241,7 +280,7 @@ export default function MapPage() {
       map.setPaintProperty("draft-fill", "circle-opacity", fillOpacity);
       map.setPaintProperty("draft-fill", "circle-radius", [
         "interpolate", ["linear"], ["zoom"],
-        8, metersToPixels(radiusM, 8),
+        8,  metersToPixels(radiusM, 8),
         18, metersToPixels(radiusM, 18),
       ]);
     }
@@ -252,7 +291,7 @@ export default function MapPage() {
       map.setPaintProperty("draft-line", "circle-stroke-width", strokeEnabled ? strokeWidth : 0);
       map.setPaintProperty("draft-line", "circle-radius", [
         "interpolate", ["linear"], ["zoom"],
-        8, metersToPixels(radiusM, 8) + strokeWidth,
+        8,  metersToPixels(radiusM, 8) + strokeWidth,
         18, metersToPixels(radiusM, 18) + strokeWidth,
       ]);
     }
@@ -278,32 +317,36 @@ export default function MapPage() {
 
   const handleSave = async () => {
     if (!draft) return;
-    await upsert({
-      id: draft.id === "draft" ? undefined : Number(draft.id), // مهم: رقم
+
+    if (!upsertMutation) {
+      console.error('[tRPC] No "upsert/save/set/create/update" mutation found in locations router.');
+      alert("لا يوجد إجراء حفظ في السيرفر (upsert/save/set/create/update). رجاءً تحقق من أسماء إجراءات tRPC في الخلفية.");
+      return;
+    }
+
+    await upsertMutation.mutateAsync({
+      id: draft.id === "draft" ? undefined : Number(draft.id),
       name: draft.name,
       lat: draft.lat,
       lng: draft.lng,
       radius: radiusM,
       notes: draft.notes ?? "",
-      fillColor,
-      fillOpacity,
-      strokeColor,
-      strokeWidth,
-      strokeEnabled,
+      fillColor, fillOpacity, strokeColor, strokeWidth, strokeEnabled,
     });
+
     setDraft(null);
     await refetch();
   };
 
   const handleDelete = async (id: number | string) => {
-    await remove({ id: Number(id) }); // مهم: رقم
+    await remove({ id: Number(id) }); // <-- تحويل إجباري إلى رقم
     if (draft && draft.id !== "draft" && Number(draft.id) === Number(id)) setDraft(null);
     await refetch();
   };
 
   const selectExisting = (loc: any) => {
     setDraft({
-      id: Number(loc.id), // مهم: رقم
+      id: Number(loc.id),
       name: loc.name,
       lat: Number(loc.latitude),
       lng: Number(loc.longitude),
@@ -328,9 +371,7 @@ export default function MapPage() {
       <div className="map-left">
         <div ref={mapEl} className="map-canvas" />
         <div className="map-toolbar">
-          <Button onClick={handleNew} size="sm">
-            <Plus className="mr-1 h-4 w-4" /> موقع جديد
-          </Button>
+          <Button onClick={handleNew} size="sm"><Plus className="mr-1 h-4 w-4" /> موقع جديد</Button>
           <Button
             variant="secondary"
             size="sm"
@@ -373,10 +414,10 @@ export default function MapPage() {
             <Textarea value={draft?.notes ?? ""} onChange={(e)=>draft&&setDraft({...draft, notes:e.target.value})} disabled={!draft} placeholder="ملاحظات" />
 
             <Label>خط العرض</Label>
-            <Input type="number" step="0.000001" value={draft?toFixed(draft.lat):""} onChange={(e)=>draft&&setDraft({...draft, lat:Number(e.target.value)})} disabled={!draft} />
+            <Input type="number" step="0.000001" value={draft?toFixed(draft.lat):""} onChange={(e)=>draft&&setDraft({...draft, lat:Number(e.target.value)})} disabled {!draft} />
 
             <Label>خط الطول</Label>
-            <Input type="number" step="0.000001" value={draft?toFixed(draft.lng):""} onChange={(e)=>draft&&setDraft({...draft, lng:Number(e.target.value)})} disabled={!draft} />
+            <Input type="number" step="0.000001" value={draft?toFixed(draft.lng):""} onChange={(e)=>draft&&setDraft({...draft, lng:Number(e.target.value)})} disabled {!draft} />
 
             <Label>نصف القطر (م)</Label>
             <div className="flex items-center gap-2">
@@ -403,7 +444,7 @@ export default function MapPage() {
           </div>
 
           <div className="flex gap-2 pt-2">
-            <Button onClick={handleSave} disabled={!draft}>
+            <Button onClick={handleSave} disabled={!draft || !upsertMutation}>
               <Save className="mr-1 h-4 w-4" /> حفظ
             </Button>
             <Button variant="outline" onClick={()=>setDraft(null)} disabled={!draft}>إلغاء</Button>
